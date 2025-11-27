@@ -33,12 +33,22 @@ pydantic-settings>=2.2.0
 # https://github.com/docling-project/docling
 docling>=2.0.0
 
+# PDF Fallback Parser (for Thai/non-English PDFs)
+pypdf>=4.0.0
+pdfplumber>=0.11.0
+pdf2image>=1.17.0
+Pillow>=10.0.0
+
 # Web Crawling
 beautifulsoup4>=4.12.0
 lxml>=5.0.0
 
 # Text Processing
 langchain-text-splitters>=0.2.0
+
+# FAST Embeddings (sentence-transformers - MUCH faster than Ollama)
+sentence-transformers>=2.7.0
+torch>=2.0.0
 
 # Security
 python-jose[cryptography]>=3.3.0

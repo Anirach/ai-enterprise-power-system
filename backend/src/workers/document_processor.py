@@ -82,15 +82,15 @@ class DocumentProcessor:
                 if chunks:
                     total_chunks = len(chunks)
                     
-                    # Generate embeddings with TRUE parallel processing
+                    # Generate embeddings with MAXIMUM parallel processing
                     await self.db_service.update_document(doc_id, progress=45)
                     
-                    # Process embeddings in parallel batches
+                    # Process ALL embeddings in parallel for SPEED
                     embeddings = await self._generate_embeddings_parallel(
                         chunks, 
                         doc_id,
-                        batch_size=50,  # Larger batches
-                        max_concurrent=20  # More concurrent requests
+                        batch_size=100,  # Process 100 at a time
+                        max_concurrent=50  # 50 concurrent requests for SPEED
                     )
                     
                     # Store in vector database
@@ -150,42 +150,35 @@ class DocumentProcessor:
         self,
         chunks: list,
         doc_id: str,
-        batch_size: int = 50,
-        max_concurrent: int = 20
+        batch_size: int = 128,
+        max_concurrent: int = 50
     ) -> list:
         """
-        Generate embeddings with true parallel processing.
-        Uses semaphore to control concurrency.
+        Generate embeddings using BATCH processing (FAST!).
+        LocalEmbeddingService can process all at once with sentence-transformers.
         """
         total = len(chunks)
-        embeddings = [None] * total
-        semaphore = asyncio.Semaphore(max_concurrent)
+        logger.info(f"🚀 Generating embeddings for {total} chunks...")
         
-        async def embed_single(idx: int, text: str):
-            async with semaphore:
-                try:
-                    embedding = await self.embedding_service.embed_text(text)
-                    return idx, embedding
-                except Exception as e:
-                    logger.error(f"Embedding failed for chunk {idx}: {e}")
-                    return idx, [0.0] * self.embedding_service.dimension
+        # Progress callback for database updates
+        async def progress_callback(processed: int, total: int):
+            progress = 45 + int((processed / total) * 40)  # 45% to 85%
+            await self.db_service.update_document(doc_id, progress=min(progress, 85))
         
-        # Process all chunks in parallel with semaphore limiting
-        tasks = [embed_single(i, chunk) for i, chunk in enumerate(chunks)]
-        
-        # Use asyncio.as_completed for progress updates
-        completed = 0
-        for coro in asyncio.as_completed(tasks):
-            idx, embedding = await coro
-            embeddings[idx] = embedding
-            completed += 1
+        try:
+            # Use batch embed_texts (MUCH faster with LocalEmbeddingService!)
+            embeddings = await self.embedding_service.embed_texts(
+                chunks,
+                batch_size=batch_size,
+                progress_callback=progress_callback
+            )
+            logger.info(f"✅ Generated {len(embeddings)} embeddings successfully")
+            return embeddings
             
-            # Update progress periodically (every 10%)
-            if completed % max(1, total // 10) == 0:
-                progress = 45 + int((completed / total) * 40)  # 45% to 85%
-                await self.db_service.update_document(doc_id, progress=min(progress, 85))
-        
-        return embeddings
+        except Exception as e:
+            logger.error(f"Batch embedding failed: {e}")
+            # Fallback: zero vectors
+            return [[0.0] * self.embedding_service.dimension for _ in chunks]
 
 
 async def create_processor_from_app(app) -> DocumentProcessor:

@@ -32,9 +32,9 @@ class FileProcessor:
     
     def __init__(
         self,
-        chunk_size: int = 1500,  # Larger chunks = fewer embedding calls
-        chunk_overlap: int = 150,  # Less overlap for efficiency
-        min_chunk_size: int = 100  # Minimum chunk size to avoid tiny chunks
+        chunk_size: int = 8000,  # HUGE chunks = minimum embedding calls = FASTEST
+        chunk_overlap: int = 200,  # Small overlap
+        min_chunk_size: int = 500  # Filter out small chunks
     ):
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
@@ -98,8 +98,11 @@ class FileProcessor:
         if ext in {".txt", ".md", ".csv"}:
             # Plain text files - read directly
             text = await self._extract_text_file(path)
+        elif ext == ".pdf":
+            # Use pdfplumber for PDFs (best Thai support)
+            text = await self._extract_pdf_with_pdfplumber(path)
         else:
-            # Use Docling for complex documents
+            # Use Docling for other complex documents (docx, pptx, etc.)
             text = await self._extract_with_docling(path)
         
         # Clean and normalize text
@@ -209,8 +212,113 @@ class FileProcessor:
         else:
             return "en"
     
+    async def _extract_pdf_with_pdfplumber(self, path: Path) -> str:
+        """Extract text from PDF using pdfplumber, with OCR fallback for scanned PDFs"""
+        text_parts = []
+        
+        # First try regular text extraction
+        try:
+            import pdfplumber
+            with pdfplumber.open(str(path)) as pdf:
+                total_pages = len(pdf.pages)
+                for i, page in enumerate(pdf.pages):
+                    text = page.extract_text()
+                    if text and text.strip():
+                        text_parts.append(text)
+                    if (i + 1) % 10 == 0:
+                        logger.info(f"Extracted page {i+1}/{total_pages}")
+            
+            if text_parts:
+                result = "\n\n".join(text_parts)
+                logger.info(f"✅ pdfplumber extracted {len(result)} chars from {len(text_parts)} pages")
+                return result
+                
+        except ImportError:
+            logger.warning("pdfplumber not installed")
+        except Exception as e:
+            logger.warning(f"pdfplumber failed: {e}")
+        
+        # If no text extracted, PDF is likely scanned - try OCR
+        logger.info("📸 No text found - trying OCR for scanned PDF...")
+        return await self._extract_pdf_with_ocr(path)
+    
+    async def _extract_pdf_with_pypdf(self, path: Path) -> str:
+        """Extract text from PDF using pypdf as fallback"""
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(str(path))
+            text_parts = []
+            for page in reader.pages:
+                text = page.extract_text()
+                if text:
+                    text_parts.append(text)
+            if text_parts:
+                result = "\n\n".join(text_parts)
+                logger.info(f"✅ pypdf extracted {len(result)} chars")
+                return result
+            return ""
+        except ImportError:
+            logger.error("pypdf not installed!")
+            return ""
+        except Exception as e:
+            logger.error(f"pypdf failed for {path}: {e}")
+            return ""
+    
+    async def _extract_pdf_with_ocr(self, path: Path) -> str:
+        """Extract text from scanned PDF using OCR (tesseract)"""
+        try:
+            import subprocess
+            import tempfile
+            from PIL import Image
+            import pdf2image
+            
+            logger.info(f"🔍 Starting OCR extraction for {path.name}...")
+            
+            # Convert PDF to images
+            images = pdf2image.convert_from_path(str(path), dpi=200)
+            logger.info(f"Converted {len(images)} pages to images")
+            
+            text_parts = []
+            for i, image in enumerate(images):
+                # Save image temporarily
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                    image.save(tmp.name, 'PNG')
+                    
+                    # Run tesseract OCR with Thai + English
+                    try:
+                        result = subprocess.run(
+                            ['tesseract', tmp.name, 'stdout', '-l', 'tha+eng'],
+                            capture_output=True,
+                            text=True,
+                            timeout=60
+                        )
+                        text = result.stdout.strip()
+                        if text:
+                            text_parts.append(text)
+                            if (i + 1) % 5 == 0:
+                                logger.info(f"OCR processed page {i+1}/{len(images)}")
+                    except subprocess.TimeoutExpired:
+                        logger.warning(f"OCR timeout on page {i+1}")
+                    finally:
+                        os.remove(tmp.name)
+            
+            if text_parts:
+                result = "\n\n".join(text_parts)
+                logger.info(f"✅ OCR extracted {len(result)} chars from {len(text_parts)} pages")
+                return result
+            
+            return ""
+            
+        except ImportError as e:
+            logger.error(f"OCR dependencies missing: {e}")
+            logger.info("Install with: pip install pdf2image pillow")
+            return ""
+        except Exception as e:
+            logger.error(f"OCR extraction failed: {e}")
+            return ""
+    
     async def _extract_with_docling(self, path: Path) -> str:
-        """Extract text using Docling"""
+        """Extract text using Docling (for non-PDF documents)"""
         try:
             converter = self._get_converter()
             result = converter.convert(str(path))
@@ -227,12 +335,30 @@ class FileProcessor:
             return await self._fallback_extract(path)
     
     async def _fallback_extract(self, path: Path) -> str:
-        """Fallback extraction when Docling fails"""
+        """Fallback extraction when Docling fails - optimized for Thai/non-English"""
         ext = path.suffix.lower()
         
         try:
             if ext == ".pdf":
-                # Try pypdf as fallback
+                # Try pdfplumber first (best for Thai text)
+                try:
+                    import pdfplumber
+                    text_parts = []
+                    with pdfplumber.open(str(path)) as pdf:
+                        for page in pdf.pages:
+                            text = page.extract_text()
+                            if text:
+                                text_parts.append(text)
+                    if text_parts:
+                        result = "\n\n".join(text_parts)
+                        logger.info(f"✅ pdfplumber extracted {len(result)} chars")
+                        return result
+                except ImportError:
+                    logger.warning("pdfplumber not installed")
+                except Exception as e:
+                    logger.warning(f"pdfplumber failed: {e}")
+                
+                # Try pypdf as second fallback
                 try:
                     from pypdf import PdfReader
                     reader = PdfReader(str(path))
@@ -241,12 +367,24 @@ class FileProcessor:
                         text = page.extract_text()
                         if text:
                             text_parts.append(text)
-                    return "\n\n".join(text_parts)
+                    if text_parts:
+                        result = "\n\n".join(text_parts)
+                        logger.info(f"✅ pypdf extracted {len(result)} chars")
+                        return result
                 except ImportError:
-                    pass
+                    logger.warning("pypdf not installed")
+                except Exception as e:
+                    logger.warning(f"pypdf failed: {e}")
+                
+                # Don't fall through to text extraction for PDFs!
+                logger.error(f"All PDF parsers failed for {path}")
+                return ""
             
-            # Try reading as text
-            return await self._extract_text_file(path)
+            # Only read as text for actual text files
+            if ext in {".txt", ".md", ".csv", ".html", ".htm"}:
+                return await self._extract_text_file(path)
+            
+            return ""
             
         except Exception as e:
             logger.error(f"Fallback extraction failed: {e}")

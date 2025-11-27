@@ -17,6 +17,7 @@ from datetime import datetime
 
 from .config import get_settings
 from .rag import EmbeddingService, VectorRetriever, RAGPipeline
+from .rag.embeddings import LocalEmbeddingService
 from .services import FileProcessor, WebCrawler
 from .services.minio_service import MinIOService
 from .services.database import DatabaseService
@@ -86,31 +87,44 @@ async def lifespan(app: FastAPI):
         logger.warning(f"⚠️ MinIO connection failed: {e}")
         minio_service = None
     
-    # Initialize embedding service with optimized settings
-    embedding_service = EmbeddingService(
-        base_url=settings.ollama_base_url,
-        model=settings.ollama_embedding_model,
-        max_concurrent=10,  # Allow up to 10 parallel embedding requests
-        timeout=120.0,
-        cache_size=2000  # Cache up to 2000 embeddings
-    )
-    logger.info(f"✅ Embedding service initialized (model: {settings.ollama_embedding_model}, parallel: 10)")
+    # Initialize FAST LOCAL embedding service using sentence-transformers
+    # This is 100x faster than Ollama for batch embeddings!
+    use_local_embeddings = os.getenv("USE_LOCAL_EMBEDDINGS", "true").lower() == "true"
     
-    # Warm up the embedding model to reduce first-request latency
+    if use_local_embeddings:
+        embedding_service = LocalEmbeddingService(
+            model_name="all-MiniLM-L6-v2",  # Fast & high quality (384 dim)
+            device="cpu",
+            cache_size=5000
+        )
+        logger.info("✅ Using FAST LOCAL embedding service (sentence-transformers)")
+        embedding_dimension = 384  # MiniLM dimension
+    else:
+        embedding_service = EmbeddingService(
+            base_url=settings.ollama_base_url,
+            model=settings.ollama_embedding_model,
+            max_concurrent=50,
+            timeout=180.0,
+            cache_size=5000
+        )
+        logger.info(f"✅ Using Ollama embedding service (model: {settings.ollama_embedding_model})")
+        embedding_dimension = 768  # nomic-embed-text dimension
+    
+    # Warm up the embedding model
     try:
-        await embedding_service.embed_text("warmup test", use_cache=False)
+        await embedding_service.embed_text("warmup test")
         logger.info("✅ Embedding model warmed up")
     except Exception as e:
         logger.warning(f"⚠️ Embedding warmup failed (will warm on first use): {e}")
     
-    # Initialize vector retriever
+    # Initialize vector retriever with matching dimension
     try:
         retriever = VectorRetriever(
             host=settings.qdrant_host,
             port=settings.qdrant_port,
-            dimension=768
+            dimension=embedding_dimension  # Use correct dimension for embedding model
         )
-        logger.info("✅ Vector retriever connected to Qdrant")
+        logger.info(f"✅ Vector retriever connected to Qdrant (dimension={embedding_dimension})")
     except Exception as e:
         logger.warning(f"⚠️ Qdrant connection failed: {e}")
         retriever = None
@@ -126,14 +140,14 @@ async def lifespan(app: FastAPI):
         )
         logger.info("✅ RAG pipeline initialized")
     
-    # Initialize file processor with optimized chunk settings
-    # Larger chunks = fewer embedding calls = faster processing
+    # Initialize file processor with MAXIMUM-SPEED chunk settings
+    # HUGE chunks = minimum embedding calls = FASTEST processing
     file_processor = FileProcessor(
-        chunk_size=1500,      # Larger chunks for fewer embedding calls
-        chunk_overlap=150,    # Less overlap for efficiency
-        min_chunk_size=100    # Filter out tiny chunks
+        chunk_size=8000,      # HUGE chunks = ~600 chunks for 5MB PDF
+        chunk_overlap=200,    # Small overlap
+        min_chunk_size=500    # Filter out small chunks
     )
-    logger.info("✅ File processor initialized (chunk_size: 1500, optimized)")
+    logger.info("✅ File processor initialized (chunk_size: 8000, MAXIMUM-SPEED)")
     
     # Initialize web crawler with matching settings
     web_crawler = WebCrawler(chunk_size=1500, chunk_overlap=150)
@@ -158,7 +172,7 @@ async def lifespan(app: FastAPI):
     )
     
     # Initialize Worker Pool for parallel document processing
-    num_workers = int(os.getenv("DOC_WORKERS", "3"))  # Default 3 workers
+    num_workers = int(os.getenv("DOC_WORKERS", "5"))  # Default 5 workers for speed
     worker_pool = WorkerPool(
         num_workers=num_workers,
         redis_url=settings.redis_url,

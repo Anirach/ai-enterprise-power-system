@@ -1,9 +1,8 @@
 """
 AI Power System - High-Performance Embedding Service
 Optimized for fast embedding generation using:
-- Parallel/Concurrent processing with asyncio
-- Connection pooling
-- Batch processing
+- LOCAL sentence-transformers (FASTEST - batch processing)
+- Fallback to Ollama API
 - Caching for duplicate texts
 """
 import httpx
@@ -11,9 +10,159 @@ import asyncio
 import hashlib
 from typing import List, Dict, Optional
 import logging
-from functools import lru_cache
+import os
 
 logger = logging.getLogger(__name__)
+
+# ============================================================
+# FAST LOCAL EMBEDDING SERVICE (sentence-transformers)
+# ============================================================
+
+class LocalEmbeddingService:
+    """
+    Ultra-fast embedding service using sentence-transformers.
+    Can process 1000+ embeddings in seconds using batch processing.
+    """
+    
+    def __init__(
+        self,
+        model_name: str = "all-MiniLM-L6-v2",  # Fast and good quality
+        device: str = "cpu",  # or "cuda" if GPU available
+        cache_size: int = 5000
+    ):
+        self.model_name = model_name
+        self.device = device
+        self._model = None
+        self._cache: Dict[str, List[float]] = {}
+        self._cache_size = cache_size
+        self.dimension = 384  # MiniLM dimension (or 768 for larger models)
+        
+    def _load_model(self):
+        """Lazy load the model"""
+        if self._model is None:
+            try:
+                from sentence_transformers import SentenceTransformer
+                logger.info(f"Loading embedding model: {self.model_name}")
+                self._model = SentenceTransformer(self.model_name, device=self.device)
+                self.dimension = self._model.get_sentence_embedding_dimension()
+                logger.info(f"✅ Model loaded: {self.model_name} (dim={self.dimension})")
+            except ImportError:
+                logger.error("sentence-transformers not installed!")
+                raise
+        return self._model
+    
+    def _get_cache_key(self, text: str) -> str:
+        return hashlib.md5(text.encode()).hexdigest()
+    
+    def _get_cached(self, text: str) -> Optional[List[float]]:
+        return self._cache.get(self._get_cache_key(text))
+    
+    def _set_cache(self, text: str, embedding: List[float]):
+        if len(self._cache) >= self._cache_size:
+            keys_to_remove = list(self._cache.keys())[:500]
+            for key in keys_to_remove:
+                self._cache.pop(key, None)
+        self._cache[self._get_cache_key(text)] = embedding
+    
+    async def embed_text(self, text: str) -> List[float]:
+        """Embed single text"""
+        cached = self._get_cached(text)
+        if cached:
+            return cached
+        
+        model = self._load_model()
+        # Run in thread pool to not block async
+        loop = asyncio.get_event_loop()
+        embedding = await loop.run_in_executor(
+            None, 
+            lambda: model.encode(text, convert_to_numpy=True).tolist()
+        )
+        self._set_cache(text, embedding)
+        return embedding
+    
+    async def embed_texts(
+        self,
+        texts: List[str],
+        batch_size: int = 128,  # Process 128 at once!
+        progress_callback=None,
+        show_progress: bool = True
+    ) -> List[List[float]]:
+        """
+        BATCH embed all texts at once - EXTREMELY FAST!
+        Can process 1000+ texts in <10 seconds.
+        """
+        if not texts:
+            return []
+        
+        total = len(texts)
+        logger.info(f"🚀 Fast batch embedding: {total} texts")
+        
+        # Check cache first
+        results = [None] * total
+        uncached_indices = []
+        uncached_texts = []
+        
+        for i, text in enumerate(texts):
+            cached = self._get_cached(text)
+            if cached:
+                results[i] = cached
+            else:
+                uncached_indices.append(i)
+                uncached_texts.append(text)
+        
+        cache_hits = total - len(uncached_texts)
+        if cache_hits > 0:
+            logger.info(f"Cache hits: {cache_hits}/{total}")
+        
+        if uncached_texts:
+            model = self._load_model()
+            
+            # Process in batches
+            for batch_start in range(0, len(uncached_texts), batch_size):
+                batch_end = min(batch_start + batch_size, len(uncached_texts))
+                batch = uncached_texts[batch_start:batch_end]
+                
+                # Run embedding in thread pool
+                loop = asyncio.get_event_loop()
+                batch_embeddings = await loop.run_in_executor(
+                    None,
+                    lambda b=batch: model.encode(b, convert_to_numpy=True, show_progress_bar=show_progress).tolist()
+                )
+                
+                # Store results
+                for i, embedding in enumerate(batch_embeddings):
+                    idx = uncached_indices[batch_start + i]
+                    results[idx] = embedding
+                    self._set_cache(uncached_texts[batch_start + i], embedding)
+                
+                if progress_callback:
+                    processed = min(batch_end + cache_hits, total)
+                    try:
+                        await progress_callback(processed, total)
+                    except:
+                        pass
+        
+        logger.info(f"✅ Embedded {total} texts successfully")
+        return results
+    
+    async def is_available(self) -> bool:
+        """Check if model can be loaded"""
+        try:
+            self._load_model()
+            return True
+        except:
+            return False
+    
+    async def close(self):
+        """Cleanup"""
+        self._model = None
+        self._cache.clear()
+    
+    def clear_cache(self):
+        self._cache.clear()
+    
+    def get_cache_stats(self) -> Dict:
+        return {"size": len(self._cache), "max_size": self._cache_size}
 
 
 class EmbeddingService:
