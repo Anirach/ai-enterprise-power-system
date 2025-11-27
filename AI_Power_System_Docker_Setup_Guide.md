@@ -1,9 +1,10 @@
 # AI Power System - Docker Setup Guide
 
 > **Project:** AI Enterprise Power System  
-> **Version:** 2.0  
+> **Version:** 2.1  
 > **Date:** November 2025  
-> **Purpose:** Complete setup guide for Docker-based AI Knowledge Platform with RAG
+> **Purpose:** Complete setup guide for Docker-based AI Knowledge Platform with RAG  
+> **Languages:** English, Thai (full OCR support)
 
 ---
 
@@ -43,8 +44,11 @@
 │  ┌────────────────────────────────────────────────────────────────────────┐ │
 │  │                        Backend (FastAPI) :8000                         │ │
 │  │  ├── RAG Pipeline (Embed → Search → Generate)                          │ │
-│  │  ├── Document Processing (Docling - PDF, DOCX, PPTX, Images)           │ │
-│  │  ├── Web Crawler Service                                               │ │
+│  │  ├── Document Processing:                                              │ │
+│  │  │   • PDF: pdfplumber + Tesseract OCR (Thai support)                  │ │
+│  │  │   • DOCX/PPTX/XLSX: Docling (IBM)                                   │ │
+│  │  ├── Embeddings: sentence-transformers (fast batch processing)         │ │
+│  │  ├── Worker Pool (5 parallel document processors)                      │ │
 │  │  └── REST API + Admin Endpoints                                        │ │
 │  └────────────────────────────────────────────────────────────────────────┘ │
 │                                      │                                       │
@@ -71,12 +75,32 @@
 |-----------|------------|---------|---------|
 | Frontend | Next.js 14 | User Interface (Chat, Knowledge Base, Admin) | 3000 |
 | Backend | FastAPI | REST API, RAG Pipeline, Document Processing | 8000 |
-| Local LLM | Ollama | Text generation & embeddings | 11434 |
+| Local LLM | Ollama | Text generation (llama3.2:3b) | 11434 |
+| Embeddings | sentence-transformers | Fast batch embedding (all-MiniLM-L6-v2) | - |
 | Vector DB | Qdrant | Semantic search & embeddings storage | 6333, 6334 |
 | Object Storage | MinIO | Document file storage | 9000 (API), 9001 (Console) |
 | Database | PostgreSQL | Document metadata, user data | 5432 |
-| Cache | Redis | Session & query caching | 6379 |
+| Task Queue | Redis | Document processing queue + caching | 6379 |
 | Automation | n8n | Workflow automation | 5678 |
+
+### Document Processing Pipeline
+
+| File Type | Parser | OCR Support | Notes |
+|-----------|--------|-------------|-------|
+| **PDF** | pdfplumber + Tesseract | ✅ Thai, English | Best for scanned documents |
+| **DOCX** | Docling (IBM) | - | Microsoft Word |
+| **PPTX** | Docling (IBM) | - | PowerPoint |
+| **XLSX** | Docling (IBM) | - | Excel |
+| **HTML** | Docling (IBM) | - | Web pages |
+| **Images** | Docling + Tesseract | ✅ Thai, English | PNG, JPG, TIFF |
+| **TXT/MD/CSV** | Native Python | - | Plain text |
+
+### Embedding Performance
+
+| Method | Speed | Use Case |
+|--------|-------|----------|
+| **sentence-transformers** (Default) | ~800 chunks/sec | Batch processing |
+| Ollama (nomic-embed-text) | ~1 chunk/sec | On-demand queries |
 
 ### Data Flow
 
@@ -91,9 +115,19 @@
 │                                 │    • name, size, page_count             │
 │                                 │    • word_count, language, tags         │
 │                                 │                                         │
-│                                 ├──► Docling (parse & extract text)       │
-│                                 │                                         │
-│                                 └──► Qdrant (store embeddings)            │
+│                                 └──► Redis Task Queue ──► Worker Pool    │
+│                                                              │            │
+│                                      ┌───────────────────────┘            │
+│                                      ▼                                    │
+│                                 Parse Document:                           │
+│                                 • PDF: pdfplumber + OCR (Thai support)   │
+│                                 • DOCX/PPTX: Docling                      │
+│                                      │                                    │
+│                                      ▼                                    │
+│                                 sentence-transformers (batch embed)       │
+│                                      │                                    │
+│                                      ▼                                    │
+│                                 Qdrant (store vectors)                    │
 │                                                                           │
 ├──────────────────────────────────────────────────────────────────────────┤
 │                         Document Delete Flow                              │
@@ -107,10 +141,10 @@
 │                            RAG Query Flow                                 │
 ├──────────────────────────────────────────────────────────────────────────┤
 │                                                                           │
-│   User Question ──► Ollama (embed) ──► Qdrant (search)                   │
-│                           │                  │                            │
-│                           │                  ▼                            │
-│                           └──► Ollama (generate with context) ──► Answer │
+│   User Question ──► sentence-transformers (embed) ──► Qdrant (search)    │
+│                                                           │               │
+│                                                           ▼               │
+│                           Ollama (generate with context) ──► Answer      │
 │                                                                           │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
@@ -187,14 +221,17 @@ ai-enterprise-power-system/
 │       ├── main.py                 # FastAPI app entry
 │       ├── config.py               # Configuration
 │       ├── rag/
-│       │   ├── embeddings.py       # Ollama embeddings
+│       │   ├── embeddings.py       # sentence-transformers + Ollama embeddings
 │       │   ├── retriever.py        # Qdrant retrieval
 │       │   └── pipeline.py         # RAG orchestration
 │       ├── services/
-│       │   ├── file_processor.py   # Docling document parsing
+│       │   ├── file_processor.py   # PDF (pdfplumber+OCR), DOCX (Docling)
 │       │   ├── web_crawler.py      # Web content extraction
 │       │   ├── minio_service.py    # MinIO file operations
 │       │   └── database.py         # PostgreSQL operations
+│       ├── workers/
+│       │   ├── task_queue.py       # Redis task queue
+│       │   └── document_processor.py # Parallel document processor
 │       └── routers/
 │           ├── chat.py             # Chat API endpoints
 │           ├── knowledge.py        # Knowledge base API
@@ -537,22 +574,51 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /app
 
+# Install system dependencies including OCR support for Thai
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     build-essential \
     libpq-dev \
+    libgl1 \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
+    libfontconfig1 \
+    poppler-utils \
+    tesseract-ocr \
+    tesseract-ocr-eng \
+    tesseract-ocr-tha \
+    fonts-thai-tlwg \
+    fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd -r appuser && useradd -r -g appuser appuser
+# Create non-root user with home directory
+RUN groupadd -r appuser && useradd -r -g appuser -d /home/appuser -m appuser
 
+# Create required directories
+RUN mkdir -p /app/uploads /home/appuser/.cache/huggingface \
+    && chown -R appuser:appuser /app/uploads /home/appuser
+
+# Set home and cache directories for docling/huggingface
+ENV HOME=/home/appuser \
+    HF_HOME=/home/appuser/.cache/huggingface
+
+# Copy and install dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt \
+    && chmod -R o+r /usr/local/lib/python3.12/site-packages/ \
+    && find /usr/local/lib/python3.12/site-packages/ -type d -exec chmod o+rx {} \;
 
+# Copy application code
 COPY src/ ./src/
+
+# Change ownership
 RUN chown -R appuser:appuser /app
 
 USER appuser
@@ -578,7 +644,7 @@ asyncpg>=0.29.0
 psycopg2-binary>=2.9.9
 alembic>=1.13.0
 
-# Redis
+# Redis (for task queue)
 redis>=5.0.0
 
 # Vector Database
@@ -594,8 +660,18 @@ aiohttp>=3.9.0
 # Data Validation
 pydantic-settings>=2.2.0
 
-# Document Processing (Docling - IBM)
+# Document Processing (Docling for DOCX/PPTX)
 docling>=2.0.0
+
+# PDF Processing (better Thai support)
+pypdf>=4.0.0
+pdfplumber>=0.11.0
+pdf2image>=1.17.0
+Pillow>=10.0.0
+
+# FAST Embeddings (sentence-transformers - batch processing)
+sentence-transformers>=2.7.0
+torch>=2.0.0
 
 # Web Crawling
 beautifulsoup4>=4.12.0
@@ -907,9 +983,11 @@ curl -I http://localhost:9001
 | GET | `/api/knowledge/documents/{id}/content` | Get document content |
 | GET | `/api/knowledge/documents/{id}/download` | Download original file |
 | DELETE | `/api/knowledge/documents/{id}` | Delete document |
+| DELETE | `/api/knowledge/clear-all` | Delete ALL documents |
 | PATCH | `/api/knowledge/documents/{id}/tags` | Update tags |
 | POST | `/api/knowledge/crawl` | Crawl website |
 | GET | `/api/knowledge/stats` | Get statistics |
+| GET | `/api/knowledge/workers/stats` | Worker pool status |
 
 ### Chat API
 
@@ -1029,6 +1107,29 @@ curl http://localhost:9000/minio/health/live
 docker compose logs minio
 ```
 
+### Thai Language Support
+
+The system fully supports Thai documents:
+
+```bash
+# Verify Thai OCR is installed
+docker exec ai-backend tesseract --list-langs
+# Should show: eng, tha
+
+# Test Thai PDF processing
+curl -X POST http://localhost:8000/api/knowledge/upload \
+  -F "file=@thai_document.pdf"
+
+# Check processing status
+curl http://localhost:8000/api/knowledge/documents | jq '.[0].status'
+```
+
+**Supported Thai processing:**
+- ✅ PDF with embedded Thai text (pdfplumber)
+- ✅ Scanned Thai PDFs (Tesseract OCR)
+- ✅ Thai in DOCX/PPTX (Docling)
+- ✅ Thai image OCR (PNG, JPG)
+
 ### Reset Everything
 
 ```bash
@@ -1056,15 +1157,18 @@ docker compose up -d --build
 
 | Service | Limit | Reserved | Notes |
 |---------|-------|----------|-------|
-| Ollama | 8 GB | 4 GB | Varies by model |
+| Ollama | 8 GB | 4 GB | Varies by model (llama3.2:3b) |
 | Qdrant | 4 GB | 2 GB | Depends on vectors |
 | PostgreSQL | 2 GB | 1 GB | Document metadata |
 | MinIO | 1 GB | 512 MB | File storage |
-| Redis | 1 GB | 512 MB | Cache |
-| Backend | 2 GB | 1 GB | FastAPI + Docling |
+| Redis | 1 GB | 512 MB | Task queue + Cache |
+| Backend | 4 GB | 2 GB | FastAPI + sentence-transformers + Docling |
 | Frontend | 1 GB | 512 MB | Next.js |
 | n8n | 2 GB | 1 GB | Workflows |
-| **Total** | ~21 GB | ~11 GB | |
+| **Total** | ~23 GB | ~12 GB | |
+
+> **Note:** First document upload will download the sentence-transformers model (~90MB).
+> This is cached for subsequent uses.
 
 ### Disk Space
 
@@ -1083,10 +1187,19 @@ docker compose up -d --build
 
 | Property | Value |
 |----------|-------|
-| **Version** | 2.0 |
+| **Version** | 2.1 |
 | **Last Updated** | November 2025 |
 | **Project** | AI Enterprise Power System |
-| **Stack** | Next.js + FastAPI + Ollama + Qdrant + MinIO + PostgreSQL |
+| **Stack** | Next.js + FastAPI + Ollama + sentence-transformers + Qdrant + MinIO + PostgreSQL |
+| **Languages** | English, Thai (full OCR support) |
+
+### Changelog (v2.1)
+
+- **PDF Processing**: Switched from Docling to pdfplumber + Tesseract OCR for better Thai language support
+- **Embeddings**: Added sentence-transformers for fast batch embedding (~800 chunks/sec vs ~1 chunk/sec with Ollama)
+- **Worker Pool**: Implemented Redis-based task queue with 5 parallel document processors
+- **Thai Support**: Added tesseract-ocr-tha and Thai fonts for proper OCR
+- **Clear All**: Added endpoint to delete all documents at once
 
 ---
 
