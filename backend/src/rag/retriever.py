@@ -6,7 +6,8 @@ from typing import List, Dict, Any, Optional
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance, VectorParams, PointStruct,
-    Filter, FieldCondition, MatchValue
+    Filter, FieldCondition, MatchValue,
+    PointsSelector, FilterSelector
 )
 import logging
 import uuid
@@ -82,7 +83,7 @@ class VectorRetriever:
         """Get the next available ID"""
         try:
             info = self.client.get_collection(self.COLLECTION_NAME)
-            return info.points_count
+            return info.points_count or 0
         except Exception:
             return 0
     
@@ -92,7 +93,7 @@ class VectorRetriever:
         top_k: int = 5,
         filter_dict: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
-        """Search for similar documents"""
+        """Search for similar documents using query_points (newer API)"""
         search_filter = None
         if filter_dict:
             conditions = [
@@ -101,29 +102,54 @@ class VectorRetriever:
             ]
             search_filter = Filter(must=conditions)
         
-        results = self.client.search(
-            collection_name=self.COLLECTION_NAME,
-            query_vector=query_embedding,
-            limit=top_k,
-            query_filter=search_filter
-        )
-        
-        return [
-            {
-                "text": hit.payload.get("text", ""),
-                "score": hit.score,
-                "metadata": {k: v for k, v in hit.payload.items() if k != "text"}
-            }
-            for hit in results
-        ]
+        try:
+            # Try newer API first (query_points)
+            results = self.client.query_points(
+                collection_name=self.COLLECTION_NAME,
+                query=query_embedding,
+                limit=top_k,
+                query_filter=search_filter
+            )
+            
+            return [
+                {
+                    "text": hit.payload.get("text", "") if hit.payload else "",
+                    "score": hit.score,
+                    "metadata": {k: v for k, v in (hit.payload or {}).items() if k != "text"}
+                }
+                for hit in results.points
+            ]
+        except AttributeError:
+            # Fallback to older API (search)
+            try:
+                results = self.client.search(
+                    collection_name=self.COLLECTION_NAME,
+                    query_vector=query_embedding,
+                    limit=top_k,
+                    query_filter=search_filter
+                )
+                
+                return [
+                    {
+                        "text": hit.payload.get("text", "") if hit.payload else "",
+                        "score": hit.score,
+                        "metadata": {k: v for k, v in (hit.payload or {}).items() if k != "text"}
+                    }
+                    for hit in results
+                ]
+            except Exception as e:
+                logger.error(f"Search failed: {e}")
+                return []
     
     async def delete_by_doc_id(self, doc_id: str) -> bool:
         """Delete all vectors associated with a document"""
         try:
             self.client.delete(
                 collection_name=self.COLLECTION_NAME,
-                points_selector=Filter(
-                    must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id))]
+                points_selector=FilterSelector(
+                    filter=Filter(
+                        must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id))]
+                    )
                 )
             )
             return True
@@ -139,9 +165,7 @@ class VectorRetriever:
                 "collection": self.COLLECTION_NAME,
                 "vectors_count": info.vectors_count,
                 "points_count": info.points_count,
-                "status": info.status.value
+                "status": info.status.value if hasattr(info.status, 'value') else str(info.status)
             }
         except Exception as e:
             return {"error": str(e)}
-
-
