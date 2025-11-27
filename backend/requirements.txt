@@ -19,6 +19,9 @@ redis>=5.0.0
 # Vector Database
 qdrant-client>=1.10.0
 
+# Object Storage (MinIO)
+minio>=7.2.0
+
 # HTTP Client
 httpx>=0.27.0
 aiohttp>=3.9.0

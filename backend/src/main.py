@@ -2,7 +2,7 @@
 AI Power System - Main Application
 =====================================
 FastAPI application with RAG pipeline, file processing, and web crawling.
-Connects to Ollama, Qdrant, PostgreSQL, and Redis.
+Connects to Ollama, Qdrant, PostgreSQL, MinIO, and Redis.
 """
 
 from fastapi import FastAPI, Request
@@ -18,7 +18,11 @@ from datetime import datetime
 from .config import get_settings
 from .rag import EmbeddingService, VectorRetriever, RAGPipeline
 from .services import FileProcessor, WebCrawler
+from .services.minio_service import MinIOService
+from .services.database import DatabaseService
 from .routers import chat, knowledge, admin
+from .workers import WorkerPool
+from .workers.document_processor import DocumentProcessor
 
 # ============================================================
 # CONFIGURATION
@@ -42,6 +46,10 @@ rag_pipeline: RAGPipeline = None
 file_processor: FileProcessor = None
 web_crawler: WebCrawler = None
 redis_client: redis.Redis = None
+minio_service: MinIOService = None
+db_service: DatabaseService = None
+worker_pool: WorkerPool = None
+document_processor: DocumentProcessor = None
 
 
 # ============================================================
@@ -51,16 +59,49 @@ redis_client: redis.Redis = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup and shutdown"""
-    global embedding_service, retriever, rag_pipeline, file_processor, web_crawler, redis_client
+    global embedding_service, retriever, rag_pipeline, file_processor, web_crawler
+    global redis_client, minio_service, db_service, worker_pool, document_processor
     
     logger.info("🚀 Starting AI Power System...")
     
-    # Initialize embedding service
+    # Initialize Database Service
+    try:
+        db_service = DatabaseService(settings.database_url)
+        await db_service.connect()
+        logger.info("✅ Database service connected to PostgreSQL")
+    except Exception as e:
+        logger.warning(f"⚠️ PostgreSQL connection failed: {e}")
+        db_service = None
+    
+    # Initialize MinIO Service
+    try:
+        minio_service = MinIOService(
+            endpoint=os.getenv("MINIO_ENDPOINT", "minio:9000"),
+            access_key=os.getenv("MINIO_ACCESS_KEY", "minioadmin"),
+            secret_key=os.getenv("MINIO_SECRET_KEY", "minioadmin123"),
+            bucket_name=os.getenv("MINIO_BUCKET", "documents")
+        )
+        logger.info("✅ MinIO service initialized")
+    except Exception as e:
+        logger.warning(f"⚠️ MinIO connection failed: {e}")
+        minio_service = None
+    
+    # Initialize embedding service with optimized settings
     embedding_service = EmbeddingService(
         base_url=settings.ollama_base_url,
-        model=settings.ollama_embedding_model
+        model=settings.ollama_embedding_model,
+        max_concurrent=10,  # Allow up to 10 parallel embedding requests
+        timeout=120.0,
+        cache_size=2000  # Cache up to 2000 embeddings
     )
-    logger.info(f"✅ Embedding service initialized (model: {settings.ollama_embedding_model})")
+    logger.info(f"✅ Embedding service initialized (model: {settings.ollama_embedding_model}, parallel: 10)")
+    
+    # Warm up the embedding model to reduce first-request latency
+    try:
+        await embedding_service.embed_text("warmup test", use_cache=False)
+        logger.info("✅ Embedding model warmed up")
+    except Exception as e:
+        logger.warning(f"⚠️ Embedding warmup failed (will warm on first use): {e}")
     
     # Initialize vector retriever
     try:
@@ -74,22 +115,28 @@ async def lifespan(app: FastAPI):
         logger.warning(f"⚠️ Qdrant connection failed: {e}")
         retriever = None
     
-    # Initialize RAG pipeline
+    # Initialize RAG pipeline with database service for document awareness
     if retriever:
         rag_pipeline = RAGPipeline(
             embedding_service=embedding_service,
             retriever=retriever,
             ollama_base_url=settings.ollama_base_url,
-            default_model=settings.ollama_default_model
+            default_model=settings.ollama_default_model,
+            db_service=db_service  # Pass db_service for document queries
         )
         logger.info("✅ RAG pipeline initialized")
     
-    # Initialize file processor
-    file_processor = FileProcessor(chunk_size=1000, chunk_overlap=200)
-    logger.info("✅ File processor initialized")
+    # Initialize file processor with optimized chunk settings
+    # Larger chunks = fewer embedding calls = faster processing
+    file_processor = FileProcessor(
+        chunk_size=1500,      # Larger chunks for fewer embedding calls
+        chunk_overlap=150,    # Less overlap for efficiency
+        min_chunk_size=100    # Filter out tiny chunks
+    )
+    logger.info("✅ File processor initialized (chunk_size: 1500, optimized)")
     
-    # Initialize web crawler
-    web_crawler = WebCrawler(chunk_size=1000, chunk_overlap=200)
+    # Initialize web crawler with matching settings
+    web_crawler = WebCrawler(chunk_size=1500, chunk_overlap=150)
     logger.info("✅ Web crawler initialized")
     
     # Initialize Redis
@@ -101,6 +148,25 @@ async def lifespan(app: FastAPI):
         logger.warning(f"⚠️ Redis connection failed: {e}")
         redis_client = None
     
+    # Initialize Document Processor for workers
+    document_processor = DocumentProcessor(
+        file_processor=file_processor,
+        embedding_service=embedding_service,
+        retriever=retriever,
+        minio_service=minio_service,
+        db_service=db_service
+    )
+    
+    # Initialize Worker Pool for parallel document processing
+    num_workers = int(os.getenv("DOC_WORKERS", "3"))  # Default 3 workers
+    worker_pool = WorkerPool(
+        num_workers=num_workers,
+        redis_url=settings.redis_url,
+        process_func=document_processor.process_document
+    )
+    await worker_pool.start()
+    logger.info(f"✅ Worker pool started ({num_workers} workers)")
+    
     # Inject dependencies into routers
     chat.set_rag_pipeline(rag_pipeline)
     knowledge.set_services(
@@ -108,7 +174,9 @@ async def lifespan(app: FastAPI):
         web_crawler,
         embedding_service,
         retriever,
-        settings.upload_dir
+        minio_service,
+        db_service,
+        worker_pool  # Add worker pool
     )
     
     # Set up admin service checks
@@ -131,9 +199,30 @@ async def lifespan(app: FastAPI):
                 pass
         return {"healthy": False}
     
+    async def check_minio():
+        if minio_service:
+            try:
+                healthy = minio_service.health_check()
+                return {"healthy": healthy, "details": {"bucket": minio_service.bucket_name}}
+            except:
+                pass
+        return {"healthy": False, "details": {"error": "Not initialized"}}
+    
+    async def check_postgres():
+        if db_service:
+            try:
+                healthy = await db_service.health_check()
+                stats = await db_service.get_stats() if healthy else {}
+                return {"healthy": healthy, "details": stats.get("documents", {})}
+            except:
+                pass
+        return {"healthy": False, "details": {"error": "Not initialized"}}
+    
     admin.set_check_functions({
         "qdrant": check_qdrant,
-        "redis": check_redis
+        "redis": check_redis,
+        "minio": check_minio,
+        "postgres": check_postgres
     })
     
     logger.info("✅ AI Power System started successfully!")
@@ -142,6 +231,18 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("🛑 Shutting down AI Power System...")
+    
+    # Stop worker pool first
+    if worker_pool:
+        await worker_pool.stop()
+        logger.info("✅ Worker pool stopped")
+    
+    # Close embedding service HTTP client
+    if embedding_service:
+        await embedding_service.close()
+    
+    if db_service:
+        await db_service.disconnect()
     
     if redis_client:
         redis_client.close()
@@ -254,6 +355,34 @@ async def health_check():
     else:
         status["services"]["redis"] = {"status": "not_initialized"}
     
+    # Check MinIO
+    if minio_service:
+        try:
+            if minio_service.health_check():
+                status["services"]["minio"] = {"status": "healthy"}
+            else:
+                status["services"]["minio"] = {"status": "unhealthy"}
+                status["status"] = "degraded"
+        except:
+            status["services"]["minio"] = {"status": "error"}
+            status["status"] = "degraded"
+    else:
+        status["services"]["minio"] = {"status": "not_initialized"}
+    
+    # Check PostgreSQL
+    if db_service:
+        try:
+            if await db_service.health_check():
+                status["services"]["postgres"] = {"status": "healthy"}
+            else:
+                status["services"]["postgres"] = {"status": "unhealthy"}
+                status["status"] = "degraded"
+        except:
+            status["services"]["postgres"] = {"status": "error"}
+            status["status"] = "degraded"
+    else:
+        status["services"]["postgres"] = {"status": "not_initialized"}
+    
     return status
 
 
@@ -286,5 +415,3 @@ if __name__ == "__main__":
         port=8000,
         reload=settings.app_debug
     )
-
-

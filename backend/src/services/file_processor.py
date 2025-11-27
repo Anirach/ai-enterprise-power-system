@@ -14,7 +14,14 @@ logger = logging.getLogger(__name__)
 
 
 class FileProcessor:
-    """Process various file types using Docling and extract text content"""
+    """
+    Process various file types using Docling and extract text content.
+    
+    Optimized for:
+    - Larger chunk sizes to reduce embedding calls
+    - Semantic-aware chunking
+    - Efficient memory usage
+    """
     
     SUPPORTED_EXTENSIONS = {
         ".pdf", ".docx", ".doc", ".pptx", ".ppt", 
@@ -25,16 +32,31 @@ class FileProcessor:
     
     def __init__(
         self,
-        chunk_size: int = 1000,
-        chunk_overlap: int = 200
+        chunk_size: int = 1500,  # Larger chunks = fewer embedding calls
+        chunk_overlap: int = 150,  # Less overlap for efficiency
+        min_chunk_size: int = 100  # Minimum chunk size to avoid tiny chunks
     ):
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
+        self.min_chunk_size = min_chunk_size
+        
+        # Optimized text splitter with semantic separators
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
             length_function=len,
-            separators=["\n\n", "\n", ". ", " ", ""]
+            separators=[
+                "\n\n\n",  # Section breaks
+                "\n\n",    # Paragraph breaks
+                "\n",      # Line breaks
+                ". ",      # Sentences
+                "? ",      # Questions
+                "! ",      # Exclamations
+                "; ",      # Semi-colons
+                ", ",      # Clauses
+                " ",       # Words
+                ""         # Characters
+            ]
         )
         self._converter = None
     
@@ -55,7 +77,14 @@ class FileProcessor:
         file_path: str,
         metadata: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """Process a file and return chunks with metadata"""
+        """
+        Process a file and return chunks with metadata.
+        
+        Optimized for:
+        - Efficient chunking with larger chunk sizes
+        - Filtering out small/useless chunks
+        - Better content extraction
+        """
         path = Path(file_path)
         
         if not path.exists():
@@ -73,8 +102,24 @@ class FileProcessor:
             # Use Docling for complex documents
             text = await self._extract_with_docling(path)
         
+        # Clean and normalize text
+        text = self._clean_text(text) if text else ""
+        
         # Split into chunks
-        chunks = self.text_splitter.split_text(text) if text else []
+        raw_chunks = self.text_splitter.split_text(text) if text else []
+        
+        # Filter out chunks that are too small or contain only whitespace/special chars
+        chunks = [
+            chunk.strip() for chunk in raw_chunks 
+            if len(chunk.strip()) >= self.min_chunk_size
+            and self._is_meaningful_chunk(chunk)
+        ]
+        
+        # Detect language (simple heuristic)
+        language = self._detect_language(text[:1000] if text else "")
+        
+        # Count pages (rough estimate for PDFs)
+        page_count = text.count('\f') + 1 if '\f' in text else (len(text) // 3000) + 1
         
         # Build metadata
         base_metadata = {
@@ -82,18 +127,87 @@ class FileProcessor:
             "filename": path.name,
             "file_type": ext,
             "file_size": path.stat().st_size,
-            "parser": "docling" if ext not in {".txt", ".md", ".csv"} else "native"
+            "parser": "docling" if ext not in {".txt", ".md", ".csv"} else "native",
+            "page_count": page_count,
+            "language": language
         }
         if metadata:
             base_metadata.update(metadata)
         
+        logger.info(f"Processed {path.name}: {len(chunks)} chunks from {len(text)} chars")
+        
         return {
             "filename": path.name,
+            "content": text,  # Return full content for storage
             "chunks": chunks,
             "metadata": base_metadata,
             "total_chunks": len(chunks),
             "total_characters": len(text) if text else 0
         }
+    
+    def _clean_text(self, text: str) -> str:
+        """Clean and normalize extracted text"""
+        import re
+        
+        # Remove excessive whitespace
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        text = re.sub(r' {2,}', ' ', text)
+        text = re.sub(r'\t+', ' ', text)
+        
+        # Remove null bytes and other control characters (except newlines)
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', text)
+        
+        return text.strip()
+    
+    def _is_meaningful_chunk(self, chunk: str) -> bool:
+        """Check if a chunk contains meaningful content"""
+        import re
+        
+        # Remove all whitespace and special characters for counting
+        alphanumeric = re.sub(r'[^a-zA-Z0-9\u0E00-\u0E7F]', '', chunk)  # Include Thai chars
+        
+        # At least 20% of the chunk should be alphanumeric
+        if len(chunk) > 0 and len(alphanumeric) / len(chunk) < 0.2:
+            return False
+        
+        # Should have at least some words
+        words = chunk.split()
+        if len(words) < 3:
+            return False
+        
+        return True
+    
+    def _detect_language(self, text: str) -> str:
+        """Simple language detection"""
+        import re
+        
+        # Check for Thai characters
+        thai_chars = len(re.findall(r'[\u0E00-\u0E7F]', text))
+        
+        # Check for Chinese characters
+        chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', text))
+        
+        # Check for Japanese characters
+        japanese_chars = len(re.findall(r'[\u3040-\u309f\u30a0-\u30ff]', text))
+        
+        # Check for Korean characters
+        korean_chars = len(re.findall(r'[\uac00-\ud7af]', text))
+        
+        total_chars = len(text)
+        
+        if total_chars == 0:
+            return "unknown"
+        
+        if thai_chars / total_chars > 0.1:
+            return "th"
+        elif chinese_chars / total_chars > 0.1:
+            return "zh"
+        elif japanese_chars / total_chars > 0.1:
+            return "ja"
+        elif korean_chars / total_chars > 0.1:
+            return "ko"
+        else:
+            return "en"
     
     async def _extract_with_docling(self, path: Path) -> str:
         """Extract text using Docling"""

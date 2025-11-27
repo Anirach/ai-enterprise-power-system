@@ -1,8 +1,10 @@
 """
 AI Power System - RAG Pipeline
 Combines retrieval and generation for question answering
+With document awareness for knowledge base queries
 """
 import httpx
+import re
 from typing import List, Dict, Any, Optional, AsyncGenerator
 import logging
 
@@ -10,6 +12,26 @@ from .embeddings import EmbeddingService
 from .retriever import VectorRetriever
 
 logger = logging.getLogger(__name__)
+
+# Keywords that indicate a document list query
+DOCUMENT_QUERY_PATTERNS = [
+    r"what\s+(documents?|files?)\s+(do\s+you\s+have|are\s+there|exist)",
+    r"list\s+(all\s+)?(documents?|files?)",
+    r"show\s+(me\s+)?(all\s+)?(documents?|files?)",
+    r"(documents?|files?)\s+(in\s+)?(the\s+)?(knowledge\s+base|system)",
+    r"how\s+many\s+(documents?|files?)",
+    r"(มี|แสดง|รายการ).*(เอกสาร|ไฟล์)",
+    r"เอกสาร.*(มี|อะไรบ้าง|ทั้งหมด)",
+]
+
+
+def is_document_query(text: str) -> bool:
+    """Check if the query is asking about documents in the knowledge base"""
+    text_lower = text.lower()
+    for pattern in DOCUMENT_QUERY_PATTERNS:
+        if re.search(pattern, text_lower):
+            return True
+    return False
 
 
 class RAGPipeline:
@@ -20,12 +42,59 @@ class RAGPipeline:
         embedding_service: EmbeddingService,
         retriever: VectorRetriever,
         ollama_base_url: str,
-        default_model: str = "llama3.2:3b"
+        default_model: str = "llama3.2:3b",
+        db_service=None
     ):
         self.embedding_service = embedding_service
         self.retriever = retriever
         self.ollama_base_url = ollama_base_url
         self.default_model = default_model
+        self.db_service = db_service
+    
+    async def _get_document_list_context(self) -> str:
+        """Get formatted document list for context"""
+        if not self.db_service:
+            return ""
+        
+        try:
+            summary = await self.db_service.get_documents_summary()
+            docs = await self.db_service.get_document_names()
+            
+            if not docs:
+                return "The knowledge base is currently empty. No documents have been uploaded yet."
+            
+            # Format document list
+            doc_lines = []
+            for i, doc in enumerate(docs, 1):
+                name = doc.get("name", "Unknown")
+                file_type = doc.get("file_type", "")
+                pages = doc.get("page_count", 0)
+                words = doc.get("word_count", 0)
+                
+                doc_info = f"{i}. {name}"
+                if pages > 0:
+                    doc_info += f" ({pages} pages)"
+                if words > 0:
+                    doc_info += f" - {words:,} words"
+                doc_lines.append(doc_info)
+            
+            total = summary.get("total", len(docs))
+            completed = summary.get("completed", len(docs))
+            total_words = summary.get("total_words", 0)
+            
+            context = f"""KNOWLEDGE BASE INFORMATION:
+Total Documents: {total}
+Processed Documents: {completed}
+Total Words: {total_words:,}
+
+Document List:
+{chr(10).join(doc_lines)}
+"""
+            return context
+            
+        except Exception as e:
+            logger.error(f"Failed to get document list: {e}")
+            return ""
     
     async def query(
         self,
@@ -179,7 +248,7 @@ Answer:"""
         use_rag: bool = True,
         model: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Chat with optional RAG enhancement"""
+        """Chat with optional RAG enhancement and document awareness"""
         model = model or self.default_model
         
         # Get the last user message for RAG
@@ -189,26 +258,42 @@ Answer:"""
                 last_user_msg = msg.get("content", "")
                 break
         
+        # Check if this is a document query
+        document_context = ""
+        if last_user_msg and is_document_query(last_user_msg):
+            document_context = await self._get_document_list_context()
+        
         # If RAG is enabled and we have a user message, enhance with context
-        context = ""
+        rag_context = ""
         sources = []
-        if use_rag and last_user_msg:
+        if use_rag and last_user_msg and not document_context:
+            # Only do RAG retrieval if not a document list query
             query_embedding = await self.embedding_service.embed_text(last_user_msg)
             retrieved_docs = await self.retriever.search(
                 query_embedding=query_embedding,
                 top_k=3
             )
             if retrieved_docs:
-                context = self._build_context(retrieved_docs)
+                rag_context = self._build_context(retrieved_docs)
                 sources = [
-                    {"text": doc["text"][:200], "score": doc["score"]}
+                    {
+                        "text": doc["text"][:200],
+                        "score": doc["score"],
+                        "metadata": doc.get("metadata", {})
+                    }
                     for doc in retrieved_docs
                 ]
         
         # Build system message with context
-        system_msg = "You are a helpful AI assistant."
-        if context:
-            system_msg += f"\n\nRelevant context:\n{context}"
+        system_msg = """You are a helpful AI assistant for the AI Power System.
+You have access to a knowledge base of documents.
+When asked about documents in the knowledge base, provide accurate information based on the context.
+Always be helpful, accurate, and concise."""
+        
+        if document_context:
+            system_msg += f"\n\n{document_context}"
+        elif rag_context:
+            system_msg += f"\n\nRelevant context from knowledge base:\n{rag_context}"
         
         # Call Ollama chat API
         try:
@@ -234,5 +319,3 @@ Answer:"""
         except Exception as e:
             logger.error(f"Chat failed: {e}")
             raise
-
-

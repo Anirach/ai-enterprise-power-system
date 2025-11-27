@@ -122,4 +122,54 @@ body {
   animation: pulse-ring 1.5s ease-out infinite;
 }
 
+/* Progress bar animations */
+@keyframes progressPulse {
+  0% {
+    width: 10%;
+    opacity: 0.6;
+  }
+  50% {
+    width: 70%;
+    opacity: 1;
+  }
+  100% {
+    width: 10%;
+    opacity: 0.6;
+  }
+}
+
+@keyframes progressSlide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+
+.animate-progress {
+  animation: progressPulse 2s ease-in-out infinite;
+}
+
+/* Indeterminate progress bar with shimmer effect */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.progress-shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(251, 191, 36, 0.3) 0%,
+    rgba(251, 191, 36, 0.8) 50%,
+    rgba(251, 191, 36, 0.3) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite linear;
+}
+
 

@@ -161,11 +161,39 @@ class VectorRetriever:
         """Get collection statistics"""
         try:
             info = self.client.get_collection(self.COLLECTION_NAME)
+            # Handle different Qdrant client versions
+            vectors_count = getattr(info, 'vectors_count', None)
+            if vectors_count is None:
+                vectors_count = getattr(info, 'points_count', 0)
+            points_count = getattr(info, 'points_count', 0)
+            status = info.status.value if hasattr(info.status, 'value') else str(info.status)
             return {
                 "collection": self.COLLECTION_NAME,
-                "vectors_count": info.vectors_count,
-                "points_count": info.points_count,
-                "status": info.status.value if hasattr(info.status, 'value') else str(info.status)
+                "vectors_count": vectors_count,
+                "points_count": points_count,
+                "status": status
             }
         except Exception as e:
+            logger.error(f"Failed to get stats: {e}")
             return {"error": str(e)}
+    
+    async def clear_collection(self) -> bool:
+        """Delete and recreate the collection to clear all vectors"""
+        try:
+            # Delete the collection
+            self.client.delete_collection(self.COLLECTION_NAME)
+            logger.info(f"Deleted collection: {self.COLLECTION_NAME}")
+            
+            # Recreate the collection
+            self.client.create_collection(
+                collection_name=self.COLLECTION_NAME,
+                vectors_config=VectorParams(
+                    size=self.dimension,
+                    distance=Distance.COSINE
+                )
+            )
+            logger.info(f"Recreated collection: {self.COLLECTION_NAME}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to clear collection: {e}")
+            return False

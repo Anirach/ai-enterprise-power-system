@@ -18,15 +18,27 @@ CREATE SCHEMA IF NOT EXISTS n8n;
 -- ============================================================
 CREATE TABLE IF NOT EXISTS documents (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    filename VARCHAR(500) NOT NULL,
-    file_path VARCHAR(1000),
+    -- Basic file info
+    name VARCHAR(500) NOT NULL,
     file_type VARCHAR(50) NOT NULL,
-    file_size BIGINT,
+    content_type VARCHAR(100),
+    file_size BIGINT DEFAULT 0,
+    -- MinIO storage
+    minio_bucket VARCHAR(100),
+    minio_object_key VARCHAR(500),
+    -- Content and processing
     content TEXT,
     chunks_count INTEGER DEFAULT 0,
     status VARCHAR(50) DEFAULT 'pending',
     error_message TEXT,
+    -- Document metadata
+    page_count INTEGER DEFAULT 0,
+    word_count INTEGER DEFAULT 0,
+    language VARCHAR(20) DEFAULT 'unknown',
+    tags TEXT[] DEFAULT '{}',
+    -- Extra metadata as JSON
     metadata JSONB DEFAULT '{}',
+    -- Timestamps
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
@@ -87,7 +99,9 @@ CREATE TABLE IF NOT EXISTS system_config (
 -- ============================================================
 CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status);
 CREATE INDEX IF NOT EXISTS idx_documents_created ON documents(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_documents_filename ON documents USING gin(filename gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_documents_name ON documents USING gin(name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_documents_tags ON documents USING gin(tags);
+CREATE INDEX IF NOT EXISTS idx_documents_language ON documents(language);
 
 CREATE INDEX IF NOT EXISTS idx_chunks_document ON chunks(document_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON chunks(embedding_id);

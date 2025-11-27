@@ -13,18 +13,32 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies including libraries for Docling/image processing
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     build-essential \
     libpq-dev \
+    libgl1 \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
+    libfontconfig1 \
+    poppler-utils \
+    tesseract-ocr \
+    tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user
-RUN groupadd -r appuser && useradd -r -g appuser appuser
+# Create non-root user with home directory
+RUN groupadd -r appuser && useradd -r -g appuser -d /home/appuser -m appuser
 
-# Create uploads directory
-RUN mkdir -p /app/uploads && chown -R appuser:appuser /app/uploads
+# Create required directories
+RUN mkdir -p /app/uploads /home/appuser/.cache/huggingface \
+    && chown -R appuser:appuser /app/uploads /home/appuser
+
+# Set home and cache directories for docling/huggingface
+ENV HOME=/home/appuser \
+    HF_HOME=/home/appuser/.cache/huggingface
 
 # Copy and install dependencies
 COPY requirements.txt .
