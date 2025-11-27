@@ -1,0 +1,217 @@
+# ============================================================
+# AI POWER SYSTEM - ALL-IN-ONE DOCKER COMPOSE
+# ============================================================
+# Services: Frontend, Backend, Ollama, Qdrant, PostgreSQL, Redis, n8n
+# ============================================================
+
+services:
+  # ==================== FRONTEND (Next.js) ====================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: ai-frontend
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://backend:8000
+      - NODE_ENV=production
+    networks:
+      - ai-network
+    depends_on:
+      - backend
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ==================== BACKEND (FastAPI) ====================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ai-backend
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    environment:
+      - APP_SECRET_KEY=${APP_SECRET_KEY}
+      - APP_DEBUG=${APP_DEBUG:-false}
+      - APP_LOG_LEVEL=${APP_LOG_LEVEL:-INFO}
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379/0
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_DEFAULT_MODEL=${OLLAMA_DEFAULT_MODEL:-llama3.2:3b}
+      - OLLAMA_EMBEDDING_MODEL=${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+      - TZ=${TIMEZONE:-Asia/Bangkok}
+    volumes:
+      - ./backend/src:/app/src:ro
+      - upload_data:/app/uploads
+    networks:
+      - ai-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ==================== OLLAMA (Local LLM) ====================
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ai-ollama
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - ai-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+        reservations:
+          memory: 4G
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:11434/api/tags || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ==================== QDRANT (Vector Database) ====================
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: ai-qdrant
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__LOG_LEVEL=INFO
+    networks:
+      - ai-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:6333/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ==================== POSTGRESQL ====================
+  postgres:
+    image: postgres:16-alpine
+    container_name: ai-postgres
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-aipower}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB:-aipower_db}
+      - PGDATA=/var/lib/postgresql/data/pgdata
+      - TZ=${TIMEZONE:-Asia/Bangkok}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - ai-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aipower} -d ${POSTGRES_DB:-aipower_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ==================== REDIS (Cache) ====================
+  redis:
+    image: redis:7-alpine
+    container_name: ai-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: >
+      redis-server 
+      --appendonly yes 
+      --maxmemory 512mb 
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - ai-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ==================== N8N (Automation) ====================
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: ai-n8n
+    ports:
+      - "${N8N_PORT:-5678}:5678"
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=${N8N_BASIC_AUTH_ACTIVE:-true}
+      - N8N_BASIC_AUTH_USER=${N8N_BASIC_AUTH_USER:-admin}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_BASIC_AUTH_PASSWORD}
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=${POSTGRES_DB:-aipower_db}
+      - DB_POSTGRESDB_USER=${POSTGRES_USER:-aipower}
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
+      - DB_POSTGRESDB_SCHEMA=n8n
+      - N8N_HOST=0.0.0.0
+      - WEBHOOK_URL=http://localhost:5678/
+      - GENERIC_TIMEZONE=${TIMEZONE:-Asia/Bangkok}
+    volumes:
+      - n8n_data:/home/node/.n8n
+    networks:
+      - ai-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+# ==================== NETWORKS ====================
+networks:
+  ai-network:
+    name: ai-power-network
+    driver: bridge
+
+# ==================== VOLUMES ====================
+volumes:
+  ollama_data:
+    name: ai-ollama-data
+  qdrant_data:
+    name: ai-qdrant-data
+  postgres_data:
+    name: ai-postgres-data
+  redis_data:
+    name: ai-redis-data
+  n8n_data:
+    name: ai-n8n-data
+  upload_data:
+    name: ai-upload-data
+
+

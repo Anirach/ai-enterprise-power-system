@@ -1,0 +1,51 @@
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Build outputs
+.next/
+out/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Data volumes (if mounted locally)
+data/
+uploads/
+
+# Docker
+*.tar
+
+# Python
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Testing
+coverage/
+.coverage
+htmlcov/
+.pytest_cache/
+
+
