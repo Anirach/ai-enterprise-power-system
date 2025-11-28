@@ -1,26 +1,62 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
-import { Send, Bot, User, Sparkles, Loader2 } from 'lucide-react'
+import { useState, useRef, useEffect, useCallback } from 'react'
+import { Send, Bot, User, Sparkles, Loader2, FileText, Globe, ExternalLink, Cpu } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+
+interface Source {
+  text: string
+  score: number
+  metadata?: {
+    filename?: string
+    url?: string
+    source?: string
+    doc_id?: string
+    chunk_index?: number
+  }
+}
 
 interface Message {
   id: string
   role: 'user' | 'assistant'
   content: string
-  sources?: Array<{ text: string; score: number }>
+  sources?: Source[]
+  model?: string
 }
+
+const API_URL = typeof window !== 'undefined' ? 'http://localhost:8000' : 'http://backend:8000'
 
 export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [useRag, setUseRag] = useState(true)
+  const [activeModel, setActiveModel] = useState<string>('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }
+
+  const fetchActiveModel = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/admin/models/active`)
+      if (res.ok) {
+        const data = await res.json()
+        setActiveModel(data.model || '')
+      }
+    } catch (error) {
+      console.error('Failed to fetch active model:', error)
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchActiveModel()
+    // Refresh every 30 seconds
+    const interval = setInterval(fetchActiveModel, 30000)
+    return () => clearInterval(interval)
+  }, [fetchActiveModel])
 
   useEffect(() => {
     scrollToBottom()
@@ -67,7 +103,8 @@ export default function ChatPage() {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
         content: data.message,
-        sources: data.sources
+        sources: data.sources,
+        model: data.model
       }
 
       setMessages(prev => [...prev, assistantMessage])
@@ -99,7 +136,19 @@ export default function ChatPage() {
             <h1 className="text-xl font-semibold">AI Chat</h1>
             <p className="text-sm text-gray-500">Chat with AI using your knowledge base</p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-4">
+            {/* Active Model Display */}
+            {activeModel && (
+              <a 
+                href="/admin" 
+                className="flex items-center gap-2 px-3 py-1.5 bg-dark-300 border border-gray-700 rounded-lg hover:border-primary-500 transition-colors"
+                title="Click to change model"
+              >
+                <Cpu className="w-4 h-4 text-primary-400" />
+                <span className="text-sm text-gray-300">{activeModel}</span>
+              </a>
+            )}
+            
             <label className="flex items-center gap-2 cursor-pointer">
               <input
                 type="checkbox"
@@ -157,7 +206,7 @@ export default function ChatPage() {
               </div>
             )}
             
-            <div className={`max-w-2xl ${message.role === 'user' ? 'order-first' : ''}`}>
+            <div className={`max-w-3xl ${message.role === 'user' ? 'order-first' : ''}`}>
               <div
                 className={`rounded-2xl px-5 py-4 ${
                   message.role === 'user'
@@ -165,23 +214,103 @@ export default function ChatPage() {
                     : 'bg-dark-300 border border-gray-800'
                 }`}
               >
-                <ReactMarkdown className="prose prose-invert prose-sm max-w-none">
+                <ReactMarkdown 
+                  remarkPlugins={[remarkGfm]}
+                  className="prose prose-invert prose-sm max-w-none
+                    prose-headings:text-gray-100 prose-headings:font-semibold
+                    prose-h1:text-xl prose-h2:text-lg prose-h3:text-base
+                    prose-p:text-gray-300 prose-p:leading-relaxed
+                    prose-a:text-primary-400 prose-a:no-underline hover:prose-a:underline
+                    prose-strong:text-gray-100 prose-strong:font-semibold
+                    prose-code:text-primary-300 prose-code:bg-dark-400 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-sm
+                    prose-pre:bg-dark-400 prose-pre:border prose-pre:border-gray-700 prose-pre:rounded-lg
+                    prose-ul:text-gray-300 prose-ol:text-gray-300
+                    prose-li:marker:text-primary-400
+                    prose-blockquote:border-l-primary-500 prose-blockquote:bg-dark-400/50 prose-blockquote:py-1 prose-blockquote:px-4 prose-blockquote:rounded-r
+                    prose-table:border-collapse prose-th:bg-dark-400 prose-th:px-3 prose-th:py-2 prose-td:px-3 prose-td:py-2 prose-td:border prose-td:border-gray-700
+                  "
+                  components={{
+                    a: ({ href, children }) => (
+                      <a href={href} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1">
+                        {children}
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    ),
+                  }}
+                >
                   {message.content}
                 </ReactMarkdown>
               </div>
               
+              {/* Source References */}
               {message.sources && message.sources.length > 0 && (
-                <div className="mt-3 space-y-2">
-                  <p className="text-xs text-gray-500 uppercase tracking-wider">Sources</p>
-                  {message.sources.map((source, idx) => (
-                    <div
-                      key={idx}
-                      className="text-xs text-gray-400 bg-dark-400 rounded-lg p-3 border border-gray-800"
-                    >
-                      <p className="line-clamp-2">{source.text}</p>
-                      <p className="text-gray-600 mt-1">Relevance: {(source.score * 100).toFixed(1)}%</p>
-                    </div>
-                  ))}
+                <div className="mt-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="h-px flex-1 bg-gray-800"></div>
+                    <span className="text-xs text-gray-500 uppercase tracking-wider px-2">
+                      📚 Sources ({message.sources.length})
+                    </span>
+                    <div className="h-px flex-1 bg-gray-800"></div>
+                  </div>
+                  
+                  <div className="grid gap-2">
+                    {message.sources.map((source, idx) => {
+                      const isWeb = source.metadata?.source === 'web' || source.metadata?.url
+                      const sourceName = source.metadata?.filename || source.metadata?.url || `Source ${idx + 1}`
+                      const relevancePercent = (source.score * 100).toFixed(0)
+                      const relevanceColor = source.score > 0.5 ? 'text-green-400' : source.score > 0.3 ? 'text-yellow-400' : 'text-gray-500'
+                      
+                      return (
+                        <div
+                          key={idx}
+                          className="group bg-dark-400/50 hover:bg-dark-400 rounded-lg p-3 border border-gray-800 hover:border-gray-700 transition-colors"
+                        >
+                          <div className="flex items-start gap-3">
+                            {/* Source Icon */}
+                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                              isWeb ? 'bg-blue-500/20 text-blue-400' : 'bg-orange-500/20 text-orange-400'
+                            }`}>
+                              {isWeb ? <Globe className="w-4 h-4" /> : <FileText className="w-4 h-4" />}
+                            </div>
+                            
+                            {/* Source Content */}
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className="text-xs font-medium text-gray-300 truncate">
+                                  [{idx + 1}] {sourceName}
+                                </span>
+                                <span className={`text-xs font-mono ${relevanceColor}`}>
+                                  {relevancePercent}%
+                                </span>
+                              </div>
+                              
+                              <p className="text-xs text-gray-500 line-clamp-2 leading-relaxed">
+                                {source.text}
+                              </p>
+                              
+                              {source.metadata?.url && (
+                                <a 
+                                  href={source.metadata.url} 
+                                  target="_blank" 
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 text-xs text-primary-400 hover:text-primary-300 mt-1"
+                                >
+                                  Open link <ExternalLink className="w-3 h-3" />
+                                </a>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+              
+              {/* Model indicator */}
+              {message.model && message.role === 'assistant' && (
+                <div className="mt-2 text-xs text-gray-600">
+                  Model: {message.model}
                 </div>
               )}
             </div>

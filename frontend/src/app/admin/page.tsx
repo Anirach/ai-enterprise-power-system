@@ -15,23 +15,45 @@ import {
   ExternalLink,
   Zap,
   Database,
-  MessageSquare
+  MessageSquare,
+  FileBox,
+  Bot,
+  Workflow,
+  BookOpen
 } from 'lucide-react'
 
 const API_URL = typeof window !== 'undefined' ? 'http://localhost:8000' : 'http://backend:8000'
 
 // Popular models from Ollama library (https://ollama.com/search?c=tools)
 const POPULAR_MODELS = [
-  { name: 'llama3.2:3b', size: '2GB', desc: 'Meta - Fast & capable' },
-  { name: 'llama3.2:1b', size: '1.3GB', desc: 'Meta - Lightweight' },
-  { name: 'llama3.1:8b', size: '4.7GB', desc: 'Meta - More powerful' },
-  { name: 'qwen2.5:3b', size: '1.9GB', desc: 'Alibaba - Multilingual' },
-  { name: 'qwen2.5:7b', size: '4.4GB', desc: 'Alibaba - Strong reasoning' },
-  { name: 'phi4-mini:3.8b', size: '2.5GB', desc: 'Microsoft - Efficient' },
-  { name: 'mistral:7b', size: '4.1GB', desc: 'Mistral AI - Popular' },
-  { name: 'gemma2:2b', size: '1.6GB', desc: 'Google - Compact' },
-  { name: 'deepseek-r1:8b', size: '4.9GB', desc: 'DeepSeek - Reasoning' },
-  { name: 'granite3.3:8b', size: '4.9GB', desc: 'IBM - Enterprise' },
+  // OpenAI Open-Weight Models
+  { name: 'gpt-oss:20b', size: '12GB', desc: 'OpenAI - Reasoning & Tools', category: 'featured' },
+  { name: 'gpt-oss:120b', size: '70GB', desc: 'OpenAI - Most Powerful', category: 'featured' },
+  // Meta Llama
+  { name: 'llama3.2:3b', size: '2GB', desc: 'Meta - Fast & capable', category: 'general' },
+  { name: 'llama3.2:1b', size: '1.3GB', desc: 'Meta - Lightweight', category: 'general' },
+  { name: 'llama3.1:8b', size: '4.7GB', desc: 'Meta - More powerful', category: 'general' },
+  { name: 'llama3.3:70b', size: '40GB', desc: 'Meta - State of the art', category: 'large' },
+  // Alibaba Qwen
+  { name: 'qwen2.5:3b', size: '1.9GB', desc: 'Alibaba - Multilingual', category: 'general' },
+  { name: 'qwen2.5:7b', size: '4.4GB', desc: 'Alibaba - Strong reasoning', category: 'general' },
+  { name: 'qwen3:8b', size: '4.9GB', desc: 'Alibaba - Latest gen', category: 'general' },
+  // DeepSeek
+  { name: 'deepseek-r1:8b', size: '4.9GB', desc: 'DeepSeek - Reasoning', category: 'reasoning' },
+  { name: 'deepseek-r1:14b', size: '9GB', desc: 'DeepSeek - Better reasoning', category: 'reasoning' },
+  // Microsoft
+  { name: 'phi4-mini:3.8b', size: '2.5GB', desc: 'Microsoft - Efficient', category: 'general' },
+  // Mistral
+  { name: 'mistral:7b', size: '4.1GB', desc: 'Mistral AI - Popular', category: 'general' },
+  { name: 'mistral-small:22b', size: '13GB', desc: 'Mistral - Small model', category: 'general' },
+  // Google
+  { name: 'gemma2:2b', size: '1.6GB', desc: 'Google - Compact', category: 'general' },
+  { name: 'gemma2:9b', size: '5.4GB', desc: 'Google - Capable', category: 'general' },
+  // IBM
+  { name: 'granite3.3:8b', size: '4.9GB', desc: 'IBM - Enterprise', category: 'general' },
+  // Coding
+  { name: 'qwen2.5-coder:7b', size: '4.4GB', desc: 'Alibaba - Code specialist', category: 'coding' },
+  { name: 'devstral:24b', size: '14GB', desc: 'Mistral - Code agent', category: 'coding' },
 ]
 
 interface ServiceStatus {
@@ -293,9 +315,11 @@ export default function AdminPage() {
   }
 
   const quickLinks = [
-    { name: 'API Documentation', url: '/docs', icon: MessageSquare, color: 'text-blue-400' },
-    { name: 'n8n Automation', url: 'http://localhost:5678', icon: Zap, color: 'text-orange-400' },
-    { name: 'Qdrant Dashboard', url: 'http://localhost:6333/dashboard', icon: Database, color: 'text-purple-400' },
+    { name: 'API Documentation', url: 'http://localhost:8000/docs', icon: BookOpen, color: 'text-blue-400', desc: 'FastAPI Swagger UI' },
+    { name: 'MinIO Console', url: 'http://localhost:9001', icon: FileBox, color: 'text-red-400', desc: 'Object Storage Management' },
+    { name: 'Qdrant Dashboard', url: 'http://localhost:6333/dashboard', icon: Database, color: 'text-purple-400', desc: 'Vector Database UI' },
+    { name: 'n8n Automation', url: 'http://localhost:5678', icon: Workflow, color: 'text-orange-400', desc: 'Workflow Automation' },
+    { name: 'Ollama API', url: 'http://localhost:11434', icon: Bot, color: 'text-green-400', desc: 'Local LLM Server' },
   ]
 
   return (
@@ -424,25 +448,34 @@ export default function AdminPage() {
           </div>
         </div>
 
-        {/* Quick Links */}
+        {/* Quick Links - Web Interfaces */}
         <div className="bg-dark-300 rounded-xl border border-gray-800">
           <div className="p-4 border-b border-gray-800">
-            <h3 className="font-medium">Quick Links</h3>
+            <h3 className="font-medium">🌐 Service Web Interfaces</h3>
+            <p className="text-xs text-gray-500 mt-1">Quick access to all service dashboards</p>
           </div>
-          <div className="p-4 space-y-3">
+          <div className="p-4 grid gap-3">
             {quickLinks.map((link) => (
               <a
                 key={link.name}
                 href={link.url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center justify-between p-3 bg-dark-400 rounded-lg hover:bg-dark-200 transition-colors"
+                className="flex items-center justify-between p-4 bg-dark-400 rounded-lg hover:bg-dark-200 border border-transparent hover:border-gray-700 transition-all group"
               >
-                <div className="flex items-center gap-3">
-                  <link.icon className={`w-5 h-5 ${link.color}`} />
-                  <span>{link.name}</span>
+                <div className="flex items-center gap-4">
+                  <div className={`w-10 h-10 rounded-lg flex items-center justify-center bg-dark-300 group-hover:scale-110 transition-transform ${link.color}`}>
+                    <link.icon className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <span className="font-medium text-gray-200">{link.name}</span>
+                    <p className="text-xs text-gray-500">{link.desc}</p>
+                  </div>
                 </div>
-                <ExternalLink className="w-4 h-4 text-gray-500" />
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-gray-600 font-mono">{link.url.replace('http://', '')}</span>
+                  <ExternalLink className="w-4 h-4 text-gray-500 group-hover:text-primary-400 transition-colors" />
+                </div>
               </a>
             ))}
           </div>
@@ -501,50 +534,153 @@ export default function AdminPage() {
           {showModelDropdown && (
             <div className="mt-4 p-4 bg-dark-400 border border-gray-700 rounded-lg">
               <div className="flex justify-between items-center mb-3">
-                <h4 className="text-sm font-medium text-gray-300">Available Models to Pull</h4>
+                <div>
+                  <h4 className="text-sm font-medium text-gray-300">Available Models to Pull</h4>
+                  <p className="text-xs text-gray-500">Click to select or type any model name above</p>
+                </div>
                 <button 
                   onClick={() => setShowModelDropdown(false)}
-                  className="text-gray-500 hover:text-gray-300"
+                  className="text-gray-500 hover:text-gray-300 p-1"
                 >
                   ✕
                 </button>
               </div>
-              <div className="grid grid-cols-2 gap-2 max-h-64 overflow-y-auto">
-                {POPULAR_MODELS.map((pm) => {
-                  const isInstalled = models.some(m => m.name === pm.name || m.name.startsWith(pm.name.split(':')[0]))
-                  return (
-                    <button
-                      key={pm.name}
-                      onClick={() => {
-                        setPullModelName(pm.name)
-                        setShowModelDropdown(false)
-                      }}
-                      disabled={isInstalled}
-                      className={`text-left p-3 rounded-lg border transition-colors ${
-                        isInstalled 
-                          ? 'bg-green-500/10 border-green-500/30 cursor-not-allowed' 
-                          : 'bg-dark-300 border-gray-700 hover:border-primary-500 hover:bg-dark-200'
-                      }`}
-                    >
-                      <div className="flex justify-between items-start">
-                        <span className="text-gray-200 font-medium">{pm.name}</span>
-                        {isInstalled && <span className="text-green-500 text-xs">Installed ✓</span>}
-                      </div>
-                      <div className="text-xs text-gray-500 mt-1">{pm.desc}</div>
-                      <div className="text-xs text-gray-600 mt-1">Size: {pm.size}</div>
-                    </button>
-                  )
-                })}
+              
+              {/* Featured Models */}
+              <div className="mb-4">
+                <p className="text-xs text-yellow-500 font-medium mb-2">⭐ Featured - OpenAI Open-Weight</p>
+                <div className="grid grid-cols-2 gap-2">
+                  {POPULAR_MODELS.filter(pm => pm.category === 'featured').map((pm) => {
+                    const isInstalled = models.some(m => m.name === pm.name || m.name.startsWith(pm.name.split(':')[0]))
+                    return (
+                      <button
+                        key={pm.name}
+                        onClick={() => {
+                          setPullModelName(pm.name)
+                          setShowModelDropdown(false)
+                        }}
+                        disabled={isInstalled}
+                        className={`text-left p-3 rounded-lg border transition-colors ${
+                          isInstalled 
+                            ? 'bg-green-500/10 border-green-500/30 cursor-not-allowed' 
+                            : 'bg-yellow-500/10 border-yellow-500/30 hover:border-yellow-500 hover:bg-yellow-500/20'
+                        }`}
+                      >
+                        <div className="flex justify-between items-start">
+                          <span className="text-yellow-300 font-medium">{pm.name}</span>
+                          {isInstalled && <span className="text-green-500 text-xs">Installed ✓</span>}
+                        </div>
+                        <div className="text-xs text-gray-400 mt-1">{pm.desc}</div>
+                        <div className="text-xs text-gray-500 mt-1">Size: {pm.size}</div>
+                      </button>
+                    )
+                  })}
+                </div>
               </div>
-              <div className="mt-3 pt-3 border-t border-gray-700 text-center">
-                <a 
-                  href="https://ollama.com/search?c=tools" 
-                  target="_blank" 
-                  rel="noopener noreferrer"
-                  className="text-sm text-primary-400 hover:text-primary-300"
-                >
-                  Browse all models on Ollama →
-                </a>
+              
+              {/* General Models */}
+              <div className="mb-4">
+                <p className="text-xs text-gray-500 font-medium mb-2">🚀 General Purpose</p>
+                <div className="grid grid-cols-3 gap-2 max-h-48 overflow-y-auto">
+                  {POPULAR_MODELS.filter(pm => pm.category === 'general').map((pm) => {
+                    const isInstalled = models.some(m => m.name === pm.name || m.name.startsWith(pm.name.split(':')[0]))
+                    return (
+                      <button
+                        key={pm.name}
+                        onClick={() => {
+                          setPullModelName(pm.name)
+                          setShowModelDropdown(false)
+                        }}
+                        disabled={isInstalled}
+                        className={`text-left p-2 rounded-lg border transition-colors ${
+                          isInstalled 
+                            ? 'bg-green-500/10 border-green-500/30 cursor-not-allowed' 
+                            : 'bg-dark-300 border-gray-700 hover:border-primary-500 hover:bg-dark-200'
+                        }`}
+                      >
+                        <div className="flex justify-between items-start">
+                          <span className="text-gray-200 font-medium text-sm">{pm.name}</span>
+                          {isInstalled && <span className="text-green-500 text-xs">✓</span>}
+                        </div>
+                        <div className="text-xs text-gray-500 mt-0.5">{pm.size}</div>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+              
+              {/* Reasoning & Coding Models */}
+              <div className="grid grid-cols-2 gap-4 mb-4">
+                <div>
+                  <p className="text-xs text-purple-400 font-medium mb-2">🧠 Reasoning</p>
+                  <div className="space-y-2">
+                    {POPULAR_MODELS.filter(pm => pm.category === 'reasoning').map((pm) => {
+                      const isInstalled = models.some(m => m.name === pm.name || m.name.startsWith(pm.name.split(':')[0]))
+                      return (
+                        <button
+                          key={pm.name}
+                          onClick={() => {
+                            setPullModelName(pm.name)
+                            setShowModelDropdown(false)
+                          }}
+                          disabled={isInstalled}
+                          className={`w-full text-left p-2 rounded-lg border transition-colors ${
+                            isInstalled 
+                              ? 'bg-green-500/10 border-green-500/30 cursor-not-allowed' 
+                              : 'bg-dark-300 border-gray-700 hover:border-purple-500 hover:bg-purple-500/10'
+                          }`}
+                        >
+                          <span className="text-gray-200 text-sm">{pm.name}</span>
+                          <span className="text-xs text-gray-500 ml-2">{pm.size}</span>
+                          {isInstalled && <span className="text-green-500 text-xs ml-2">✓</span>}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+                <div>
+                  <p className="text-xs text-blue-400 font-medium mb-2">💻 Coding</p>
+                  <div className="space-y-2">
+                    {POPULAR_MODELS.filter(pm => pm.category === 'coding').map((pm) => {
+                      const isInstalled = models.some(m => m.name === pm.name || m.name.startsWith(pm.name.split(':')[0]))
+                      return (
+                        <button
+                          key={pm.name}
+                          onClick={() => {
+                            setPullModelName(pm.name)
+                            setShowModelDropdown(false)
+                          }}
+                          disabled={isInstalled}
+                          className={`w-full text-left p-2 rounded-lg border transition-colors ${
+                            isInstalled 
+                              ? 'bg-green-500/10 border-green-500/30 cursor-not-allowed' 
+                              : 'bg-dark-300 border-gray-700 hover:border-blue-500 hover:bg-blue-500/10'
+                          }`}
+                        >
+                          <span className="text-gray-200 text-sm">{pm.name}</span>
+                          <span className="text-xs text-gray-500 ml-2">{pm.size}</span>
+                          {isInstalled && <span className="text-green-500 text-xs ml-2">✓</span>}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              </div>
+              
+              <div className="pt-3 border-t border-gray-700">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-gray-500">
+                    💡 Tip: Type any model name like <code className="bg-dark-300 px-1 rounded">gpt-oss:20b</code> and click Pull
+                  </p>
+                  <a 
+                    href="https://ollama.com/search?c=tools" 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="text-xs text-primary-400 hover:text-primary-300"
+                  >
+                    Browse all models →
+                  </a>
+                </div>
               </div>
             </div>
           )}
