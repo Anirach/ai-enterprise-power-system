@@ -20,6 +20,20 @@ import {
 
 const API_URL = typeof window !== 'undefined' ? 'http://localhost:8000' : 'http://backend:8000'
 
+// Popular models from Ollama library (https://ollama.com/search?c=tools)
+const POPULAR_MODELS = [
+  { name: 'llama3.2:3b', size: '2GB', desc: 'Meta - Fast & capable' },
+  { name: 'llama3.2:1b', size: '1.3GB', desc: 'Meta - Lightweight' },
+  { name: 'llama3.1:8b', size: '4.7GB', desc: 'Meta - More powerful' },
+  { name: 'qwen2.5:3b', size: '1.9GB', desc: 'Alibaba - Multilingual' },
+  { name: 'qwen2.5:7b', size: '4.4GB', desc: 'Alibaba - Strong reasoning' },
+  { name: 'phi4-mini:3.8b', size: '2.5GB', desc: 'Microsoft - Efficient' },
+  { name: 'mistral:7b', size: '4.1GB', desc: 'Mistral AI - Popular' },
+  { name: 'gemma2:2b', size: '1.6GB', desc: 'Google - Compact' },
+  { name: 'deepseek-r1:8b', size: '4.9GB', desc: 'DeepSeek - Reasoning' },
+  { name: 'granite3.3:8b', size: '4.9GB', desc: 'IBM - Enterprise' },
+]
+
 interface ServiceStatus {
   name: string
   status: string
@@ -31,6 +45,7 @@ interface Model {
   size: number
   modified_at: string
   digest: string
+  is_active: boolean
 }
 
 interface SystemInfo {
@@ -57,25 +72,74 @@ export default function AdminPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [pullModelName, setPullModelName] = useState('')
   const [isPulling, setIsPulling] = useState(false)
+  const [pullStatus, setPullStatus] = useState<string | null>(null)
+  const [pullProgress, setPullProgress] = useState<number>(0)
+  const [showModelDropdown, setShowModelDropdown] = useState(false)
 
+  const reconnectToPullStream = useCallback((model: string) => {
+    const eventSource = new EventSource(`${API_URL}/api/admin/models/pull/${encodeURIComponent(model)}/stream`)
+    
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        
+        if (data.status === 'success') {
+          setPullStatus(`✅ Successfully pulled ${model}`)
+          setPullProgress(100)
+          setPullModelName('')
+          eventSource.close()
+          setIsPulling(false)
+        } else if (data.status === 'error') {
+          setPullStatus(`❌ Error: ${data.message}`)
+          eventSource.close()
+          setIsPulling(false)
+        } else {
+          setPullProgress(data.progress || 0)
+          setPullStatus(`⏳ ${data.details || data.status || 'Downloading...'}`)
+        }
+      } catch (e) {
+        console.error('Parse error:', e)
+      }
+    }
+    
+    eventSource.onerror = () => {
+      eventSource.close()
+    }
+    
+    return eventSource
+  }, [])
+  
   const fetchData = useCallback(async () => {
     setIsLoading(true)
     try {
-      const [servicesRes, modelsRes, systemRes] = await Promise.all([
+      const [servicesRes, modelsRes, systemRes, pullStatusRes] = await Promise.all([
         fetch(`${API_URL}/api/admin/services`),
         fetch(`${API_URL}/api/admin/models`),
-        fetch(`${API_URL}/api/admin/system-info`)
+        fetch(`${API_URL}/api/admin/system-info`),
+        fetch(`${API_URL}/api/admin/models/pull/status`)
       ])
 
       if (servicesRes.ok) setServices(await servicesRes.json())
       if (modelsRes.ok) setModels(await modelsRes.json())
       if (systemRes.ok) setSystemInfo(await systemRes.json())
+      
+      // Check if there's an ongoing pull (only if not already pulling)
+      if (pullStatusRes.ok && !isPulling) {
+        const pullData = await pullStatusRes.json()
+        if (pullData.pulling && pullData.model) {
+          setIsPulling(true)
+          setPullModelName(pullData.model)
+          setPullProgress(pullData.progress || 0)
+          setPullStatus(`⏳ ${pullData.details || pullData.status || 'Downloading...'}`)
+          reconnectToPullStream(pullData.model)
+        }
+      }
     } catch (error) {
       console.error('Failed to fetch admin data:', error)
     } finally {
       setIsLoading(false)
     }
-  }, [])
+  }, [isPulling, reconnectToPullStream])
 
   useEffect(() => {
     fetchData()
@@ -83,23 +147,94 @@ export default function AdminPage() {
     return () => clearInterval(interval)
   }, [fetchData])
 
-  const handlePullModel = async () => {
-    if (!pullModelName.trim()) return
+  const handlePullModel = async (modelToPull?: string) => {
+    const model = modelToPull || pullModelName.trim()
+    if (!model) return
 
     setIsPulling(true)
+    setPullModelName(model)
+    setPullProgress(0)
+    setPullStatus(`⏳ Starting download of ${model}...`)
+    setShowModelDropdown(false)
+    
     try {
-      const res = await fetch(`${API_URL}/api/admin/models/pull`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: pullModelName })
-      })
-      if (res.ok) {
-        setPullModelName('')
-        setTimeout(fetchData, 2000)
+      // Use EventSource for Server-Sent Events
+      const eventSource = new EventSource(`${API_URL}/api/admin/models/pull/${encodeURIComponent(model)}/stream`)
+      
+      eventSource.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data)
+          
+          if (data.status === 'success') {
+            setPullStatus(`✅ Successfully pulled ${model}`)
+            setPullProgress(100)
+            setPullModelName('')
+            eventSource.close()
+            setTimeout(() => {
+              fetchData()
+              setPullStatus(null)
+              setPullProgress(0)
+            }, 3000)
+            setIsPulling(false)
+          } else if (data.status === 'error') {
+            setPullStatus(`❌ Error: ${data.message}`)
+            eventSource.close()
+            setTimeout(() => {
+              setPullStatus(null)
+              setPullProgress(0)
+            }, 5000)
+            setIsPulling(false)
+          } else {
+            // Update progress
+            setPullProgress(data.progress || 0)
+            
+            // Format status message
+            let statusMsg = data.status || 'Downloading...'
+            if (data.total > 0) {
+              const completedMB = (data.completed / 1024 / 1024).toFixed(1)
+              const totalMB = (data.total / 1024 / 1024).toFixed(1)
+              statusMsg = `${data.status}: ${completedMB} MB / ${totalMB} MB`
+            }
+            setPullStatus(`⏳ ${statusMsg}`)
+          }
+        } catch (e) {
+          console.error('Parse error:', e)
+        }
       }
+      
+      eventSource.onerror = (error) => {
+        console.error('EventSource error:', error)
+        eventSource.close()
+        // Check if model was actually pulled despite error
+        setTimeout(async () => {
+          try {
+            const res = await fetch(`${API_URL}/api/admin/models`)
+            const models = await res.json()
+            if (models.some((m: Model) => m.name === model)) {
+              setPullStatus(`✅ Successfully pulled ${model}`)
+              setPullProgress(100)
+              fetchData()
+            } else {
+              setPullStatus(`❌ Connection error. Please try again.`)
+            }
+          } catch {
+            setPullStatus(`❌ Connection error. Please try again.`)
+          }
+          setTimeout(() => {
+            setPullStatus(null)
+            setPullProgress(0)
+          }, 3000)
+          setIsPulling(false)
+        }, 1000)
+      }
+      
     } catch (error) {
       console.error('Failed to pull model:', error)
-    } finally {
+      setPullStatus(`❌ Error: ${error instanceof Error ? error.message : 'Network error'}`)
+      setTimeout(() => {
+        setPullStatus(null)
+        setPullProgress(0)
+      }, 5000)
       setIsPulling(false)
     }
   }
@@ -114,6 +249,24 @@ export default function AdminPage() {
       if (res.ok) fetchData()
     } catch (error) {
       console.error('Failed to delete model:', error)
+    }
+  }
+
+  const handleActivateModel = async (modelName: string) => {
+    try {
+      const res = await fetch(`${API_URL}/api/admin/models/active`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: modelName })
+      })
+      if (res.ok) {
+        fetchData()
+      } else {
+        const data = await res.json()
+        alert(`Failed to activate model: ${data.detail || 'Unknown error'}`)
+      }
+    } catch (error) {
+      console.error('Failed to activate model:', error)
     }
   }
 
@@ -298,25 +451,103 @@ export default function AdminPage() {
 
       {/* AI Models */}
       <div className="bg-dark-300 rounded-xl border border-gray-800">
-        <div className="p-4 border-b border-gray-800 flex items-center justify-between">
-          <h3 className="font-medium">AI Models (Ollama)</h3>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={pullModelName}
-              onChange={(e) => setPullModelName(e.target.value)}
-              placeholder="llama3.2:3b"
-              className="bg-dark-400 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-primary-500"
-            />
-            <button
-              onClick={handlePullModel}
-              disabled={!pullModelName.trim() || isPulling}
-              className="flex items-center gap-2 px-3 py-1.5 bg-primary-600 hover:bg-primary-700 disabled:bg-gray-700 rounded-lg text-sm transition-colors"
-            >
-              <Download className="w-4 h-4" />
-              {isPulling ? 'Pulling...' : 'Pull Model'}
-            </button>
+        <div className="p-4 border-b border-gray-800">
+          <div className="flex items-center justify-between">
+            <h3 className="font-medium">AI Models (Ollama)</h3>
+            <div className="flex gap-2 items-center relative">
+              <input
+                type="text"
+                value={pullModelName}
+                onChange={(e) => setPullModelName(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && !isPulling && handlePullModel()}
+                onClick={() => setShowModelDropdown(!showModelDropdown)}
+                placeholder="Select or type model name"
+                className="w-72 bg-dark-400 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-primary-500 cursor-pointer"
+              />
+              <button
+                onClick={() => handlePullModel()}
+                disabled={!pullModelName.trim() || isPulling}
+                className="flex items-center gap-2 px-4 py-1.5 bg-primary-600 hover:bg-primary-700 disabled:bg-gray-700 disabled:cursor-not-allowed rounded-lg text-sm transition-colors whitespace-nowrap"
+              >
+                <Download className={`w-4 h-4 ${isPulling ? 'animate-bounce' : ''}`} />
+                {isPulling ? 'Pulling...' : 'Pull'}
+              </button>
+            </div>
           </div>
+          {pullStatus && (
+            <div className={`mt-3 p-3 rounded-lg text-sm ${
+              pullStatus.startsWith('✅') ? 'bg-green-500/20 text-green-400' :
+              pullStatus.startsWith('❌') ? 'bg-red-500/20 text-red-400' :
+              'bg-blue-500/20 text-blue-400'
+            }`}>
+              <div className="flex items-center justify-between mb-2">
+                <span>{pullStatus}</span>
+                {isPulling && pullProgress > 0 && (
+                  <span className="text-xs font-mono">{pullProgress}%</span>
+                )}
+              </div>
+              {isPulling && (
+                <div className="w-full bg-dark-400 rounded-full h-2 overflow-hidden">
+                  <div 
+                    className="h-full bg-gradient-to-r from-blue-500 to-primary-500 transition-all duration-300 ease-out"
+                    style={{ width: `${Math.max(pullProgress, 2)}%` }}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+          
+          {/* Model Selection Dropdown */}
+          {showModelDropdown && (
+            <div className="mt-4 p-4 bg-dark-400 border border-gray-700 rounded-lg">
+              <div className="flex justify-between items-center mb-3">
+                <h4 className="text-sm font-medium text-gray-300">Available Models to Pull</h4>
+                <button 
+                  onClick={() => setShowModelDropdown(false)}
+                  className="text-gray-500 hover:text-gray-300"
+                >
+                  ✕
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-2 max-h-64 overflow-y-auto">
+                {POPULAR_MODELS.map((pm) => {
+                  const isInstalled = models.some(m => m.name === pm.name || m.name.startsWith(pm.name.split(':')[0]))
+                  return (
+                    <button
+                      key={pm.name}
+                      onClick={() => {
+                        setPullModelName(pm.name)
+                        setShowModelDropdown(false)
+                      }}
+                      disabled={isInstalled}
+                      className={`text-left p-3 rounded-lg border transition-colors ${
+                        isInstalled 
+                          ? 'bg-green-500/10 border-green-500/30 cursor-not-allowed' 
+                          : 'bg-dark-300 border-gray-700 hover:border-primary-500 hover:bg-dark-200'
+                      }`}
+                    >
+                      <div className="flex justify-between items-start">
+                        <span className="text-gray-200 font-medium">{pm.name}</span>
+                        {isInstalled && <span className="text-green-500 text-xs">Installed ✓</span>}
+                      </div>
+                      <div className="text-xs text-gray-500 mt-1">{pm.desc}</div>
+                      <div className="text-xs text-gray-600 mt-1">Size: {pm.size}</div>
+                    </button>
+                  )
+                })}
+              </div>
+              <div className="mt-3 pt-3 border-t border-gray-700 text-center">
+                <a 
+                  href="https://ollama.com/search?c=tools" 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className="text-sm text-primary-400 hover:text-primary-300"
+                >
+                  Browse all models on Ollama →
+                </a>
+              </div>
+            </div>
+          )}
         </div>
         <div className="p-4">
           {models.length === 0 ? (
@@ -330,21 +561,46 @@ export default function AdminPage() {
               {models.map((model) => (
                 <div
                   key={model.name}
-                  className="p-4 bg-dark-400 rounded-lg border border-gray-700"
+                  className={`p-4 bg-dark-400 rounded-lg border-2 transition-colors ${
+                    model.is_active 
+                      ? 'border-green-500 bg-green-500/10' 
+                      : 'border-gray-700 hover:border-gray-600'
+                  }`}
                 >
                   <div className="flex items-start justify-between">
-                    <div>
-                      <p className="font-medium">{model.name}</p>
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <p className="font-medium">{model.name}</p>
+                        {model.is_active && (
+                          <span className="px-2 py-0.5 text-xs bg-green-500/20 text-green-400 rounded-full">
+                            Active
+                          </span>
+                        )}
+                      </div>
                       <p className="text-sm text-gray-500 mt-1">
                         Size: {formatBytes(model.size)}
                       </p>
                       <p className="text-xs text-gray-600 mt-1">
                         {new Date(model.modified_at).toLocaleDateString()}
                       </p>
+                      {!model.is_active && (
+                        <button
+                          onClick={() => handleActivateModel(model.name)}
+                          className="mt-2 px-3 py-1 text-xs bg-primary-600 hover:bg-primary-700 rounded transition-colors"
+                        >
+                          Use This Model
+                        </button>
+                      )}
                     </div>
                     <button
                       onClick={() => handleDeleteModel(model.name)}
-                      className="p-2 text-gray-500 hover:text-red-400 transition-colors"
+                      disabled={model.is_active}
+                      className={`p-2 transition-colors ${
+                        model.is_active 
+                          ? 'text-gray-600 cursor-not-allowed' 
+                          : 'text-gray-500 hover:text-red-400'
+                      }`}
+                      title={model.is_active ? 'Cannot delete active model' : 'Delete model'}
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>

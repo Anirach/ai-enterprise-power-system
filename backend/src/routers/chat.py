@@ -95,9 +95,10 @@ async def chat(request: ChatRequest):
         return ChatResponse(
             message=result["message"],
             sources=result.get("sources", []),
-            model=result["model"]
+            model=result.get("model", "unknown")
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        error_detail = str(e) if str(e) else f"{type(e).__name__}: An error occurred"
+        raise HTTPException(status_code=500, detail=error_detail)
 
 

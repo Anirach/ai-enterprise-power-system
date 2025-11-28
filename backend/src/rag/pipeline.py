@@ -5,6 +5,8 @@ With document awareness for knowledge base queries
 """
 import httpx
 import re
+import redis
+import os
 from typing import List, Dict, Any, Optional, AsyncGenerator
 import logging
 
@@ -12,6 +14,18 @@ from .embeddings import EmbeddingService
 from .retriever import VectorRetriever
 
 logger = logging.getLogger(__name__)
+
+# Redis config for active model
+ACTIVE_MODEL_KEY = "ai_power:active_model"
+
+def _get_active_model_from_redis() -> Optional[str]:
+    """Get the currently active model from Redis"""
+    try:
+        redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
+        r = redis.from_url(redis_url, decode_responses=True)
+        return r.get(ACTIVE_MODEL_KEY)
+    except:
+        return None
 
 # Keywords that indicate a document list query
 DOCUMENT_QUERY_PATTERNS = [
@@ -96,6 +110,16 @@ Document List:
             logger.error(f"Failed to get document list: {e}")
             return ""
     
+    def _get_model(self, model: Optional[str] = None) -> str:
+        """Get the model to use - checks Redis for active model first"""
+        if model:
+            return model
+        # Try to get active model from Redis
+        active = _get_active_model_from_redis()
+        if active:
+            return active
+        return self.default_model
+    
     async def query(
         self,
         question: str,
@@ -104,7 +128,7 @@ Document List:
         filter_dict: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Execute RAG query: retrieve context and generate answer"""
-        model = model or self.default_model
+        model = self._get_model(model)
         
         # Step 1: Embed the question
         query_embedding = await self.embedding_service.embed_text(question)
@@ -144,7 +168,7 @@ Document List:
         filter_dict: Optional[Dict[str, Any]] = None
     ) -> AsyncGenerator[str, None]:
         """Execute RAG query with streaming response"""
-        model = model or self.default_model
+        model = self._get_model(model)
         
         # Retrieve context
         query_embedding = await self.embedding_service.embed_text(question)
@@ -180,7 +204,7 @@ Document List:
         prompt = self._build_prompt(question, context)
         
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            async with httpx.AsyncClient(timeout=300.0) as client:  # 5 min for reasoning models
                 response = await client.post(
                     f"{self.ollama_base_url}/api/generate",
                     json={
@@ -210,7 +234,7 @@ Document List:
         prompt = self._build_prompt(question, context)
         
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            async with httpx.AsyncClient(timeout=300.0) as client:  # 5 min for reasoning models
                 async with client.stream(
                     "POST",
                     f"{self.ollama_base_url}/api/generate",
@@ -249,7 +273,7 @@ Answer:"""
         model: Optional[str] = None
     ) -> Dict[str, Any]:
         """Chat with optional RAG enhancement and document awareness"""
-        model = model or self.default_model
+        model = self._get_model(model)
         
         # Get the last user message for RAG
         last_user_msg = None
@@ -299,7 +323,9 @@ Always be helpful, accurate, and concise."""
         try:
             chat_messages = [{"role": "system", "content": system_msg}] + messages
             
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            logger.info(f"Calling Ollama chat with model: {model}")
+            
+            async with httpx.AsyncClient(timeout=300.0) as client:  # 5 min for reasoning models
                 response = await client.post(
                     f"{self.ollama_base_url}/api/chat",
                     json={
@@ -316,6 +342,12 @@ Always be helpful, accurate, and concise."""
                     "sources": sources,
                     "model": model
                 }
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Chat HTTP error: {e.response.status_code} - {e.response.text}")
+            raise
+        except httpx.RequestError as e:
+            logger.error(f"Chat request error: {type(e).__name__} - {e}")
+            raise
         except Exception as e:
-            logger.error(f"Chat failed: {e}")
+            logger.error(f"Chat failed: {type(e).__name__} - {e}")
             raise
