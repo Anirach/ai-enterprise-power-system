@@ -116,6 +116,7 @@ export default function KnowledgePage() {
   const [isLoadingContent, setIsLoadingContent] = useState(false)
   const [showViewer, setShowViewer] = useState(false)
   const [isClearing, setIsClearing] = useState(false)
+  const [isDragging, setIsDragging] = useState(false)
 
   const fetchDocuments = useCallback(async () => {
     try {
@@ -151,10 +152,7 @@ export default function KnowledgePage() {
     return () => clearInterval(interval)
   }, [fetchDocuments, fetchStats])
 
-  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-
+  const uploadFile = async (file: File) => {
     setIsUploading(true)
     const formData = new FormData()
     formData.append('file', file)
@@ -176,8 +174,36 @@ export default function KnowledgePage() {
       alert('Upload failed. Please check if the backend is running.')
     } finally {
       setIsUploading(false)
-      e.target.value = ''
     }
+  }
+
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    await uploadFile(file)
+    e.target.value = ''
+  }
+
+  const handleDragOver = (e: React.DragEvent<HTMLLabelElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragging(true)
+  }
+
+  const handleDragLeave = (e: React.DragEvent<HTMLLabelElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragging(false)
+  }
+
+  const handleDrop = async (e: React.DragEvent<HTMLLabelElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragging(false)
+
+    const file = e.dataTransfer.files?.[0]
+    if (!file) return
+    await uploadFile(file)
   }
 
   const handleCrawl = async () => {
@@ -374,7 +400,16 @@ export default function KnowledgePage() {
             <Upload className="w-5 h-5 text-primary-400" />
             Upload Document
           </h3>
-          <label className="flex flex-col items-center justify-center h-32 border-2 border-dashed border-gray-700 rounded-xl cursor-pointer hover:border-primary-500 transition-colors">
+          <label
+            className={`flex flex-col items-center justify-center h-32 border-2 border-dashed rounded-xl cursor-pointer transition-colors ${
+              isDragging
+                ? 'border-primary-500 bg-primary-500/10'
+                : 'border-gray-700 hover:border-primary-500'
+            }`}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
             <input
               type="file"
               onChange={handleUpload}
@@ -387,6 +422,11 @@ export default function KnowledgePage() {
                 <RefreshCw className="w-5 h-5 animate-spin" />
                 <span>Processing with Docling...</span>
               </div>
+            ) : isDragging ? (
+              <>
+                <Upload className="w-8 h-8 text-primary-400 mb-2" />
+                <p className="text-sm text-primary-400">Drop file here</p>
+              </>
             ) : (
               <>
                 <FolderOpen className="w-8 h-8 text-gray-500 mb-2" />
