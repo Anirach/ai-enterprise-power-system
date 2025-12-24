@@ -397,6 +397,22 @@ async def health_check():
     else:
         status["services"]["postgres"] = {"status": "not_initialized"}
     
+    # Check n8n
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get("http://n8n:5678/healthz")
+            if response.status_code == 200:
+                status["services"]["n8n"] = {
+                    "status": "healthy",
+                    "url": "http://localhost:5678"
+                }
+            else:
+                status["services"]["n8n"] = {"status": "unhealthy"}
+                status["status"] = "degraded"
+    except:
+        status["services"]["n8n"] = {"status": "unreachable"}
+        status["status"] = "degraded"
+    
     return status
 
 

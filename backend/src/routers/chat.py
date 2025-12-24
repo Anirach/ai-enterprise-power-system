@@ -86,6 +86,22 @@ async def chat(request: ChatRequest):
     try:
         messages = [{"role": m.role, "content": m.content} for m in request.messages]
         
+        # Use streaming for faster perceived response
+        if request.stream:
+            async def generate():
+                async for chunk in rag_pipeline.chat_stream(
+                    messages=messages,
+                    use_rag=request.use_rag,
+                    model=request.model
+                ):
+                    yield f"data: {json.dumps(chunk)}\n\n"
+                yield "data: [DONE]\n\n"
+            
+            return StreamingResponse(
+                generate(),
+                media_type="text/event-stream"
+            )
+        
         result = await rag_pipeline.chat(
             messages=messages,
             use_rag=request.use_rag,
@@ -100,5 +116,35 @@ async def chat(request: ChatRequest):
     except Exception as e:
         error_detail = str(e) if str(e) else f"{type(e).__name__}: An error occurred"
         raise HTTPException(status_code=500, detail=error_detail)
+
+
+@router.post("/stream")
+async def chat_stream(request: ChatRequest):
+    """Chat with streaming response for faster perceived response time"""
+    if not rag_pipeline:
+        raise HTTPException(status_code=503, detail="RAG pipeline not initialized")
+    
+    messages = [{"role": m.role, "content": m.content} for m in request.messages]
+    
+    async def generate():
+        try:
+            async for chunk in rag_pipeline.chat_stream(
+                messages=messages,
+                use_rag=request.use_rag,
+                model=request.model
+            ):
+                yield f"data: {json.dumps(chunk)}\n\n"
+            yield "data: [DONE]\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+    
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+    )
 
 

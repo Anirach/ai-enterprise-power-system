@@ -82,8 +82,20 @@ export default function ChatPage() {
     setInput('')
     setIsLoading(true)
 
+    // Create placeholder for streaming response
+    const assistantId = (Date.now() + 1).toString()
+    const placeholderMessage: Message = {
+      id: assistantId,
+      role: 'assistant',
+      content: '',
+      sources: [],
+      model: ''
+    }
+    setMessages(prev => [...prev, placeholderMessage])
+
     try {
-      const response = await fetch(`${getApiUrl()}/api/chat/`, {
+      // Use streaming endpoint for faster perceived response
+      const response = await fetch(`${getApiUrl()}/api/chat/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -97,24 +109,64 @@ export default function ChatPage() {
 
       if (!response.ok) throw new Error('Failed to get response')
 
-      const data = await response.json()
+      const reader = response.body?.getReader()
+      const decoder = new TextDecoder()
+      let fullContent = ''
+      let sources: Source[] = []
+      let model = ''
 
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: data.message,
-        sources: data.sources,
-        model: data.model
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+
+          const chunk = decoder.decode(value)
+          const lines = chunk.split('\n')
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6)
+              if (data === '[DONE]') continue
+              
+              try {
+                const parsed = JSON.parse(data)
+                
+                if (parsed.type === 'sources') {
+                  sources = parsed.sources || []
+                  model = parsed.model || ''
+                } else if (parsed.type === 'chunk') {
+                  fullContent += parsed.content
+                  // Update message in real-time
+                  setMessages(prev => prev.map(m => 
+                    m.id === assistantId 
+                      ? { ...m, content: fullContent, sources, model }
+                      : m
+                  ))
+                } else if (parsed.type === 'error') {
+                  throw new Error(parsed.error)
+                }
+              } catch (e) {
+                // Ignore parse errors for incomplete chunks
+              }
+            }
+          }
+        }
       }
 
-      setMessages(prev => [...prev, assistantMessage])
+      // Final update with complete content
+      setMessages(prev => prev.map(m => 
+        m.id === assistantId 
+          ? { ...m, content: fullContent, sources, model }
+          : m
+      ))
+
     } catch (error) {
       console.error('Chat error:', error)
-      setMessages(prev => [...prev, {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: 'Sorry, I encountered an error. Please make sure the backend is running and Ollama has models loaded.'
-      }])
+      setMessages(prev => prev.map(m => 
+        m.id === assistantId
+          ? { ...m, content: 'Sorry, I encountered an error. Please make sure the backend is running and Ollama has models loaded.' }
+          : m
+      ))
     } finally {
       setIsLoading(false)
     }
@@ -242,70 +294,97 @@ export default function ChatPage() {
                 </ReactMarkdown>
               </div>
               
-              {/* Source References */}
-              {message.sources && message.sources.length > 0 && (
-                <div className="mt-4">
-                  <div className="flex items-center gap-2 mb-3">
-                    <div className="h-px flex-1 bg-gray-800"></div>
-                    <span className="text-xs text-gray-500 uppercase tracking-wider px-2">
-                      📚 Sources ({message.sources.length})
-                    </span>
-                    <div className="h-px flex-1 bg-gray-800"></div>
-                  </div>
-                  
-                  <div className="grid gap-2">
-                    {message.sources.map((source, idx) => {
-                      const isWeb = source.metadata?.source === 'web' || source.metadata?.url
-                      const sourceName = source.metadata?.filename || source.metadata?.url || `Source ${idx + 1}`
-                      const relevancePercent = (source.score * 100).toFixed(0)
-                      const relevanceColor = source.score > 0.5 ? 'text-green-400' : source.score > 0.3 ? 'text-yellow-400' : 'text-gray-500'
-                      
-                      return (
-                        <div
-                          key={idx}
-                          className="group bg-dark-400/50 hover:bg-dark-400 rounded-lg p-3 border border-gray-800 hover:border-gray-700 transition-colors"
-                        >
-                          <div className="flex items-start gap-3">
-                            {/* Source Icon */}
-                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${
-                              isWeb ? 'bg-blue-500/20 text-blue-400' : 'bg-orange-500/20 text-orange-400'
-                            }`}>
-                              {isWeb ? <Globe className="w-4 h-4" /> : <FileText className="w-4 h-4" />}
-                            </div>
-                            
-                            {/* Source Content */}
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2 mb-1">
-                                <span className="text-xs font-medium text-gray-300 truncate">
-                                  [{idx + 1}] {sourceName}
-                                </span>
-                                <span className={`text-xs font-mono ${relevanceColor}`}>
-                                  {relevancePercent}%
-                                </span>
+              {/* Source References - Grouped by Document */}
+              {message.sources && message.sources.length > 0 && (() => {
+                // Group sources by filename/doc_id
+                const groupedSources = message.sources.reduce((acc, source) => {
+                  const key = source.metadata?.filename || source.metadata?.doc_id || source.metadata?.url || 'Unknown'
+                  if (!acc[key]) {
+                    acc[key] = {
+                      name: key,
+                      isWeb: source.metadata?.source === 'web' || !!source.metadata?.url,
+                      url: source.metadata?.url,
+                      chunks: []
+                    }
+                  }
+                  acc[key].chunks.push({
+                    text: source.text,
+                    score: source.score,
+                    chunkIndex: source.metadata?.chunk_index
+                  })
+                  return acc
+                }, {} as Record<string, { name: string; isWeb: boolean; url?: string; chunks: { text: string; score: number; chunkIndex?: number }[] }>)
+                
+                const uniqueSources = Object.values(groupedSources)
+                
+                return (
+                  <div className="mt-4">
+                    <div className="flex items-center gap-2 mb-3">
+                      <div className="h-px flex-1 bg-gray-800"></div>
+                      <span className="text-xs text-gray-500 uppercase tracking-wider px-2">
+                        📚 Sources ({uniqueSources.length} document{uniqueSources.length !== 1 ? 's' : ''})
+                      </span>
+                      <div className="h-px flex-1 bg-gray-800"></div>
+                    </div>
+                    
+                    <div className="grid gap-2">
+                      {uniqueSources.map((source, idx) => {
+                        const avgScore = source.chunks.reduce((sum, c) => sum + c.score, 0) / source.chunks.length
+                        const relevancePercent = (avgScore * 100).toFixed(0)
+                        const relevanceColor = avgScore > 0.5 ? 'text-green-400' : avgScore > 0.3 ? 'text-yellow-400' : 'text-gray-500'
+                        
+                        return (
+                          <div
+                            key={idx}
+                            className="group bg-dark-400/50 hover:bg-dark-400 rounded-lg p-3 border border-gray-800 hover:border-gray-700 transition-colors"
+                          >
+                            <div className="flex items-start gap-3">
+                              {/* Source Icon */}
+                              <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                                source.isWeb ? 'bg-blue-500/20 text-blue-400' : 'bg-orange-500/20 text-orange-400'
+                              }`}>
+                                {source.isWeb ? <Globe className="w-4 h-4" /> : <FileText className="w-4 h-4" />}
                               </div>
                               
-                              <p className="text-xs text-gray-500 line-clamp-2 leading-relaxed">
-                                {source.text}
-                              </p>
-                              
-                              {source.metadata?.url && (
-                                <a 
-                                  href={source.metadata.url} 
-                                  target="_blank" 
-                                  rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1 text-xs text-primary-400 hover:text-primary-300 mt-1"
-                                >
-                                  Open link <ExternalLink className="w-3 h-3" />
-                                </a>
-                              )}
+                              {/* Source Content */}
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <span className="text-xs font-medium text-gray-300 truncate">
+                                    [{idx + 1}] {source.name}
+                                  </span>
+                                  <span className={`text-xs font-mono ${relevanceColor}`}>
+                                    {relevancePercent}%
+                                  </span>
+                                  {source.chunks.length > 1 && (
+                                    <span className="text-xs text-gray-600">
+                                      ({source.chunks.length} sections)
+                                    </span>
+                                  )}
+                                </div>
+                                
+                                <p className="text-xs text-gray-500 line-clamp-2 leading-relaxed">
+                                  {source.chunks[0].text}
+                                </p>
+                                
+                                {source.url && (
+                                  <a 
+                                    href={source.url} 
+                                    target="_blank" 
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1 text-xs text-primary-400 hover:text-primary-300 mt-1"
+                                  >
+                                    Open link <ExternalLink className="w-3 h-3" />
+                                  </a>
+                                )}
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      )
-                    })}
+                        )
+                      })}
+                    </div>
                   </div>
-                </div>
-              )}
+                )
+              })()}
               
               {/* Model indicator */}
               {message.model && message.role === 'assistant' && (

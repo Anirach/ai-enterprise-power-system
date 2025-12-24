@@ -329,6 +329,21 @@ async def check_services():
     except:
         services.append(ServiceStatus(name="ollama", status="unreachable"))
     
+    # Check n8n
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get("http://n8n:5678/healthz")
+            if response.status_code == 200:
+                services.append(ServiceStatus(
+                    name="n8n",
+                    status="healthy",
+                    details={"url": "http://localhost:5678"}
+                ))
+            else:
+                services.append(ServiceStatus(name="n8n", status="unhealthy"))
+    except:
+        services.append(ServiceStatus(name="n8n", status="unreachable"))
+    
     # Check other services using injected functions
     for service_name, check_func in check_functions.items():
         try:

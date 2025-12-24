@@ -553,6 +553,102 @@ async def delete_document(doc_id: str):
     }
 
 
+@router.post("/documents/{doc_id}/reprocess")
+async def reprocess_document(doc_id: str):
+    """Re-queue a document for processing"""
+    if not db_service:
+        raise HTTPException(status_code=503, detail="Database service not initialized")
+    
+    doc = await db_service.get_document(doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    # Only allow reprocessing of pending, failed, or stuck processing documents
+    if doc["status"] not in ["pending", "failed", "processing"]:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Cannot reprocess document with status '{doc['status']}'. Only pending, failed, or processing documents can be reprocessed."
+        )
+    
+    # Reset document status
+    await db_service.update_document(doc_id, status="processing", progress=0, error_message=None)
+    
+    # Delete existing chunks if any
+    try:
+        await db_service.delete_chunks_by_document(doc_id)
+    except:
+        pass
+    
+    # Delete from vector store if any
+    if retriever:
+        try:
+            await retriever.delete_by_doc_id(doc_id)
+        except:
+            pass
+    
+    # Queue for processing
+    if worker_pool:
+        await worker_pool.enqueue_document({
+            "doc_id": doc_id,
+            "object_key": doc.get("minio_object_key"),
+            "filename": doc["name"],
+            "metadata": doc.get("metadata", {})
+        })
+        return {"status": "queued", "id": doc_id, "message": "Document queued for reprocessing"}
+    else:
+        raise HTTPException(status_code=503, detail="Worker pool not available")
+
+
+@router.post("/reprocess-all-pending")
+async def reprocess_all_pending():
+    """Re-queue all pending or failed documents for processing"""
+    if not db_service:
+        raise HTTPException(status_code=503, detail="Database service not initialized")
+    
+    if not worker_pool:
+        raise HTTPException(status_code=503, detail="Worker pool not available")
+    
+    # Get all pending and failed documents
+    pending_docs = await db_service.get_documents(status="pending", limit=1000)
+    failed_docs = await db_service.get_documents(status="failed", limit=1000)
+    
+    queued_count = 0
+    
+    for doc in pending_docs + failed_docs:
+        doc_id = doc["id"]
+        
+        # Reset document status
+        await db_service.update_document(doc_id, status="processing", progress=0, error_message=None)
+        
+        # Delete existing chunks if any
+        try:
+            await db_service.delete_chunks_by_document(doc_id)
+        except:
+            pass
+        
+        # Delete from vector store if any
+        if retriever:
+            try:
+                await retriever.delete_by_doc_id(doc_id)
+            except:
+                pass
+        
+        # Queue for processing
+        await worker_pool.enqueue_document({
+            "doc_id": doc_id,
+            "object_key": doc.get("minio_object_key"),
+            "filename": doc["name"],
+            "metadata": doc.get("metadata", {})
+        })
+        queued_count += 1
+    
+    return {
+        "status": "success",
+        "queued_count": queued_count,
+        "message": f"Queued {queued_count} documents for reprocessing"
+    }
+
+
 @router.delete("/clear-all")
 async def clear_all_knowledge():
     """Clear all documents from MinIO, PostgreSQL, and Qdrant"""

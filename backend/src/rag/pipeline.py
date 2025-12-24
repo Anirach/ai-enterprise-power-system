@@ -183,14 +183,49 @@ Document List:
         async for chunk in self._generate_answer_stream(question, context, model):
             yield chunk
     
-    def _build_context(self, documents: List[Dict[str, Any]]) -> str:
-        """Build context string from retrieved documents"""
+    def _build_context(self, documents: List[Dict[str, Any]], max_chars: int = 3000) -> str:
+        """Build context string from retrieved documents, grouping by source file"""
         if not documents:
             return "No relevant context found."
         
+        # Group chunks by source document
+        docs_by_source = {}
+        for doc in documents:
+            metadata = doc.get("metadata", {})
+            # Try different keys for source identification
+            source_name = (
+                metadata.get("filename") or 
+                metadata.get("doc_id") or 
+                metadata.get("source") or 
+                "Unknown Source"
+            )
+            
+            if source_name not in docs_by_source:
+                docs_by_source[source_name] = {
+                    "chunks": [],
+                    "metadata": metadata
+                }
+            docs_by_source[source_name]["chunks"].append(doc["text"])
+        
+        # Build context with proper document grouping
         context_parts = []
-        for i, doc in enumerate(documents, 1):
-            context_parts.append(f"[Document {i}]\n{doc['text']}")
+        total_chars = 0
+        for i, (source_name, data) in enumerate(docs_by_source.items(), 1):
+            # Limit each chunk to prevent overly long context
+            truncated_chunks = []
+            for chunk in data["chunks"]:
+                remaining = max_chars - total_chars
+                if remaining <= 0:
+                    break
+                if len(chunk) > remaining:
+                    chunk = chunk[:remaining] + "..."
+                truncated_chunks.append(chunk)
+                total_chars += len(chunk)
+            
+            if truncated_chunks:
+                chunks_text = "\n---\n".join(truncated_chunks)
+                display_name = source_name.split("/")[-1] if "/" in source_name else source_name
+                context_parts.append(f"[Source {i}: {display_name}]\n{chunks_text}")
         
         return "\n\n".join(context_parts)
     
@@ -295,7 +330,7 @@ Answer:"""
             query_embedding = await self.embedding_service.embed_text(last_user_msg)
             retrieved_docs = await self.retriever.search(
                 query_embedding=query_embedding,
-                top_k=3
+                top_k=2  # Reduced for faster responses
             )
             if retrieved_docs:
                 rag_context = self._build_context(retrieved_docs)
@@ -312,26 +347,40 @@ Answer:"""
         system_msg = """You are a helpful AI assistant for the AI Power System.
 You have access to a knowledge base of documents.
 When asked about documents in the knowledge base, provide accurate information based on the context.
+IMPORTANT: Multiple text chunks may come from the SAME source document. 
+When referencing sources, refer to them by their source name, not as separate documents.
 Always be helpful, accurate, and concise."""
         
         if document_context:
             system_msg += f"\n\n{document_context}"
         elif rag_context:
-            system_msg += f"\n\nRelevant context from knowledge base:\n{rag_context}"
+            # Count unique sources for clarity
+            unique_sources = len(set(
+                s.get("metadata", {}).get("filename", s.get("metadata", {}).get("doc_id", "unknown"))
+                for s in sources
+            ))
+            system_msg += f"\n\nRelevant context from {unique_sources} source document(s):\n{rag_context}"
         
-        # Call Ollama chat API
+        # Call Ollama chat API with optimized settings
         try:
             chat_messages = [{"role": "system", "content": system_msg}] + messages
             
             logger.info(f"Calling Ollama chat with model: {model}")
             
-            async with httpx.AsyncClient(timeout=300.0) as client:  # 5 min for reasoning models
+            async with httpx.AsyncClient(timeout=300.0) as client:  # 5 min for large/reasoning models
                 response = await client.post(
                     f"{self.ollama_base_url}/api/chat",
                     json={
                         "model": model,
                         "messages": chat_messages,
-                        "stream": False
+                        "stream": False,
+                        "options": {
+                            "num_ctx": 2048,  # Smaller context = faster
+                            "num_predict": 512,  # Limit response length
+                            "temperature": 0.7,
+                            "top_p": 0.9,
+                            "repeat_penalty": 1.1
+                        }
                     }
                 )
                 response.raise_for_status()
@@ -351,3 +400,95 @@ Always be helpful, accurate, and concise."""
         except Exception as e:
             logger.error(f"Chat failed: {type(e).__name__} - {e}")
             raise
+    
+    async def chat_stream(
+        self,
+        messages: List[Dict[str, str]],
+        use_rag: bool = True,
+        model: Optional[str] = None
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Chat with streaming response for faster perceived response time"""
+        import json as json_module
+        
+        model = self._get_model(model)
+        
+        # Get the last user message for RAG
+        last_user_msg = None
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                last_user_msg = msg.get("content", "")
+                break
+        
+        # Check if this is a document query
+        document_context = ""
+        if last_user_msg and is_document_query(last_user_msg):
+            document_context = await self._get_document_list_context()
+        
+        # If RAG is enabled, get context
+        rag_context = ""
+        sources = []
+        if use_rag and last_user_msg and not document_context:
+            query_embedding = await self.embedding_service.embed_text(last_user_msg)
+            retrieved_docs = await self.retriever.search(
+                query_embedding=query_embedding,
+                top_k=3
+            )
+            if retrieved_docs:
+                rag_context = self._build_context(retrieved_docs)
+                sources = [
+                    {
+                        "text": doc["text"][:200],
+                        "score": doc["score"],
+                        "metadata": doc.get("metadata", {})
+                    }
+                    for doc in retrieved_docs
+                ]
+        
+        # Build system message
+        system_msg = """You are a helpful AI assistant. Be concise and accurate."""
+        
+        if document_context:
+            system_msg += f"\n\n{document_context}"
+        elif rag_context:
+            unique_sources = len(set(
+                s.get("metadata", {}).get("filename", s.get("metadata", {}).get("doc_id", "unknown"))
+                for s in sources
+            ))
+            system_msg += f"\n\nContext from {unique_sources} document(s):\n{rag_context}"
+        
+        # Send sources first
+        yield {"type": "sources", "sources": sources, "model": model}
+        
+        # Stream the response
+        try:
+            chat_messages = [{"role": "system", "content": system_msg}] + messages
+            
+            async with httpx.AsyncClient(timeout=300.0) as client:  # 5 min for large/reasoning models
+                async with client.stream(
+                    "POST",
+                    f"{self.ollama_base_url}/api/chat",
+                    json={
+                        "model": model,
+                        "messages": chat_messages,
+                        "stream": True,
+                        "options": {
+                            "num_ctx": 2048,
+                            "num_predict": 512,
+                            "temperature": 0.7
+                        }
+                    }
+                ) as response:
+                    async for line in response.aiter_lines():
+                        if line:
+                            try:
+                                data = json_module.loads(line)
+                                if "message" in data and "content" in data["message"]:
+                                    yield {"type": "chunk", "content": data["message"]["content"]}
+                            except:
+                                pass
+            
+            yield {"type": "done"}
+            
+        except Exception as e:
+            logger.error(f"Streaming chat failed: {e}")
+            yield {"type": "error", "error": str(e)}
