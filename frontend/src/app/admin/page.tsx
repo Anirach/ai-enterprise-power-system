@@ -319,7 +319,7 @@ export default function AdminPage() {
     { name: 'MinIO Console', url: 'http://localhost:9001', icon: FileBox, color: 'text-red-400', desc: 'Object Storage Management' },
     { name: 'Qdrant Dashboard', url: 'http://localhost:6333/dashboard', icon: Database, color: 'text-purple-400', desc: 'Vector Database UI' },
     { name: 'n8n Automation', url: 'http://localhost:5678', icon: Workflow, color: 'text-orange-400', desc: 'Workflow Automation' },
-    { name: 'Ollama Model Library', url: 'https://ollama.com/library', icon: Bot, color: 'text-green-400', desc: 'Browse & Download Models' },
+    { name: 'pgAdmin', url: 'http://localhost:5050', icon: Database, color: 'text-green-400', desc: 'PostgreSQL Admin Panel' },
   ]
 
   return (

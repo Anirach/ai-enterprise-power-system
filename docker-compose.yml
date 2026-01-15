@@ -195,6 +195,25 @@ services:
       retries: 3
       start_period: 30s
 
+  # ==================== PGADMIN (PostgreSQL Admin) ====================
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: ai-pgadmin
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=${PGADMIN_EMAIL:-admin@example.com}
+      - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_PASSWORD:-admin123}
+      - PGADMIN_CONFIG_SERVER_MODE=False
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    networks:
+      - ai-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
   # ==================== N8N (Automation) ====================
   n8n:
     image: n8nio/n8n:latest
@@ -247,5 +266,7 @@ volumes:
     name: ai-upload-data
   minio_data:
     name: ai-minio-data
+  pgadmin_data:
+    name: ai-pgadmin-data
 
 
