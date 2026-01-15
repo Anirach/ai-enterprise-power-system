@@ -25,7 +25,7 @@ interface Message {
   model?: string
 }
 
-const API_URL = typeof window !== 'undefined' ? 'http://localhost:8000' : 'http://backend:8000'
+const API_URL = typeof window !== 'undefined' ? 'http://localhost:3602' : 'http://backend:8000'
 
 export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([])
@@ -64,7 +64,7 @@ export default function ChatPage() {
 
   const getApiUrl = () => {
     if (typeof window !== 'undefined') {
-      return 'http://localhost:8000'
+      return 'http://localhost:3602'
     }
     return 'http://backend:8000'
   }
@@ -266,32 +266,41 @@ export default function ChatPage() {
                     : 'bg-dark-300 border border-gray-800'
                 }`}
               >
-                <ReactMarkdown 
-                  remarkPlugins={[remarkGfm]}
-                  className="prose prose-invert prose-sm max-w-none
-                    prose-headings:text-gray-100 prose-headings:font-semibold
-                    prose-h1:text-xl prose-h2:text-lg prose-h3:text-base
-                    prose-p:text-gray-300 prose-p:leading-relaxed
-                    prose-a:text-primary-400 prose-a:no-underline hover:prose-a:underline
-                    prose-strong:text-gray-100 prose-strong:font-semibold
-                    prose-code:text-primary-300 prose-code:bg-dark-400 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-sm
-                    prose-pre:bg-dark-400 prose-pre:border prose-pre:border-gray-700 prose-pre:rounded-lg
-                    prose-ul:text-gray-300 prose-ol:text-gray-300
-                    prose-li:marker:text-primary-400
-                    prose-blockquote:border-l-primary-500 prose-blockquote:bg-dark-400/50 prose-blockquote:py-1 prose-blockquote:px-4 prose-blockquote:rounded-r
-                    prose-table:border-collapse prose-th:bg-dark-400 prose-th:px-3 prose-th:py-2 prose-td:px-3 prose-td:py-2 prose-td:border prose-td:border-gray-700
-                  "
-                  components={{
-                    a: ({ href, children }) => (
-                      <a href={href} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1">
-                        {children}
-                        <ExternalLink className="w-3 h-3" />
-                      </a>
-                    ),
-                  }}
-                >
-                  {message.content}
-                </ReactMarkdown>
+{/* Show loading dots when assistant message is empty and loading */}
+                {message.role === 'assistant' && !message.content && isLoading ? (
+                  <div className="flex gap-1">
+                    <div className="w-2 h-2 bg-gray-500 rounded-full typing-dot"></div>
+                    <div className="w-2 h-2 bg-gray-500 rounded-full typing-dot"></div>
+                    <div className="w-2 h-2 bg-gray-500 rounded-full typing-dot"></div>
+                  </div>
+                ) : (
+                  <ReactMarkdown 
+                    remarkPlugins={[remarkGfm]}
+                    className="prose prose-invert prose-sm max-w-none
+                      prose-headings:text-gray-100 prose-headings:font-semibold
+                      prose-h1:text-xl prose-h2:text-lg prose-h3:text-base
+                      prose-p:text-gray-300 prose-p:leading-relaxed
+                      prose-a:text-primary-400 prose-a:no-underline hover:prose-a:underline
+                      prose-strong:text-gray-100 prose-strong:font-semibold
+                      prose-code:text-primary-300 prose-code:bg-dark-400 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-sm
+                      prose-pre:bg-dark-400 prose-pre:border prose-pre:border-gray-700 prose-pre:rounded-lg
+                      prose-ul:text-gray-300 prose-ol:text-gray-300
+                      prose-li:marker:text-primary-400
+                      prose-blockquote:border-l-primary-500 prose-blockquote:bg-dark-400/50 prose-blockquote:py-1 prose-blockquote:px-4 prose-blockquote:rounded-r
+                      prose-table:border-collapse prose-th:bg-dark-400 prose-th:px-3 prose-th:py-2 prose-td:px-3 prose-td:py-2 prose-td:border prose-td:border-gray-700
+                    "
+                    components={{
+                      a: ({ href, children }) => (
+                        <a href={href} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1">
+                          {children}
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      ),
+                    }}
+                  >
+                    {message.content}
+                  </ReactMarkdown>
+                )}
               </div>
               
               {/* Source References - Grouped by Document */}
@@ -401,21 +410,6 @@ export default function ChatPage() {
             )}
           </div>
         ))}
-
-        {isLoading && (
-          <div className="flex gap-4">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500 to-purple-600 flex items-center justify-center">
-              <Bot className="w-5 h-5 text-white" />
-            </div>
-            <div className="bg-dark-300 border border-gray-800 rounded-2xl px-5 py-4">
-              <div className="flex gap-1">
-                <div className="w-2 h-2 bg-gray-500 rounded-full typing-dot"></div>
-                <div className="w-2 h-2 bg-gray-500 rounded-full typing-dot"></div>
-                <div className="w-2 h-2 bg-gray-500 rounded-full typing-dot"></div>
-              </div>
-            </div>
-          </div>
-        )}
 
         <div ref={messagesEndRef} />
       </div>

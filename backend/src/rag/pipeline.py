@@ -478,12 +478,26 @@ Always be helpful, accurate, and concise."""
                         }
                     }
                 ) as response:
+                    thinking_started = False
                     async for line in response.aiter_lines():
                         if line:
                             try:
                                 data = json_module.loads(line)
-                                if "message" in data and "content" in data["message"]:
-                                    yield {"type": "chunk", "content": data["message"]["content"]}
+                                if "message" in data:
+                                    msg = data["message"]
+                                    # Handle reasoning models (deepseek-r1, etc.) that have "thinking" field
+                                    if "thinking" in msg and msg["thinking"]:
+                                        if not thinking_started:
+                                            yield {"type": "chunk", "content": "*Thinking...*\n\n"}
+                                            thinking_started = True
+                                        # Show thinking in italic/dimmed
+                                        yield {"type": "chunk", "content": msg["thinking"]}
+                                    # Handle normal content
+                                    if "content" in msg and msg["content"]:
+                                        if thinking_started:
+                                            yield {"type": "chunk", "content": "\n\n**Answer:**\n\n"}
+                                            thinking_started = False
+                                        yield {"type": "chunk", "content": msg["content"]}
                             except:
                                 pass
             

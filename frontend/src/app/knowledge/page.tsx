@@ -22,7 +22,7 @@ import {
   Languages
 } from 'lucide-react'
 
-const API_URL = typeof window !== 'undefined' ? 'http://localhost:8000' : 'http://backend:8000'
+const API_URL = typeof window !== 'undefined' ? 'http://localhost:3602' : 'http://backend:8000'
 
 interface Document {
   id: string

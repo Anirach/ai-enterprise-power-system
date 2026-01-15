@@ -192,6 +192,17 @@ async def lifespan(app: FastAPI):
         db_service,
         worker_pool  # Add worker pool
     )
+
+    # Inject database service into admin router for persistence
+    admin.set_db_service(db_service)
+
+    # Sync active model from PostgreSQL to Redis on startup
+    if db_service:
+        try:
+            active_model = await admin.sync_active_model_from_db()
+            logger.info(f"✅ Active model synced: {active_model}")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to sync active model: {e}")
     
     # Set up admin service checks
     async def check_qdrant():

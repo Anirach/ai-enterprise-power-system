@@ -24,10 +24,21 @@ redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
 ACTIVE_MODEL_KEY = "ai_power:active_model"
 PULLING_MODEL_KEY = "ai_power:pulling_model"
 PULL_PROGRESS_KEY = "ai_power:pull_progress"
+ACTIVE_MODEL_CONFIG_KEY = "active_model"  # PostgreSQL config key
 DEFAULT_MODEL = os.getenv("OLLAMA_DEFAULT_MODEL", "llama3.2:3b")
 
 # Redis client (lazy initialized)
 _redis_client = None
+
+# Database service (injected from main.py)
+_db_service = None
+
+
+def set_db_service(db_service):
+    """Inject database service from main.py"""
+    global _db_service
+    _db_service = db_service
+
 
 def get_redis():
     global _redis_client
@@ -35,17 +46,115 @@ def get_redis():
         _redis_client = redis.from_url(redis_url, decode_responses=True)
     return _redis_client
 
+
 def get_active_model() -> str:
-    """Get the currently active model from Redis"""
+    """Get the currently active model from Redis (fast path)"""
     try:
         r = get_redis()
         model = r.get(ACTIVE_MODEL_KEY)
-        return model if model else DEFAULT_MODEL
-    except:
-        return DEFAULT_MODEL
+        if model:
+            return model
+    except Exception as e:
+        logger.warning(f"Redis read failed: {e}")
+
+    # Fallback to environment default (PostgreSQL sync happens at startup)
+    return DEFAULT_MODEL
+
+
+async def get_active_model_from_db() -> Optional[str]:
+    """Get active model from PostgreSQL (persistent storage)"""
+    if _db_service is None:
+        return None
+    try:
+        value = await _db_service.get_config(ACTIVE_MODEL_CONFIG_KEY)
+        # Value is stored as JSON string in JSONB column
+        if isinstance(value, str):
+            return value.strip('"')
+        return value
+    except Exception as e:
+        logger.warning(f"Failed to get active model from DB: {e}")
+        return None
+
+
+async def set_active_model_with_persistence(model: str) -> bool:
+    """Set the active model in both Redis (fast) and PostgreSQL (persistent)"""
+    success = True
+
+    # Write to Redis (fast path)
+    try:
+        r = get_redis()
+        r.set(ACTIVE_MODEL_KEY, model)
+        logger.info(f"Active model set in Redis: {model}")
+    except Exception as e:
+        logger.error(f"Failed to set active model in Redis: {e}")
+        success = False
+
+    # Write to PostgreSQL (persistent)
+    if _db_service:
+        try:
+            result = await _db_service.set_config(
+                ACTIVE_MODEL_CONFIG_KEY,
+                model,
+                "Currently active LLM model"
+            )
+            if result:
+                logger.info(f"Active model persisted to PostgreSQL: {model}")
+            else:
+                logger.warning("Failed to persist active model to PostgreSQL")
+                success = False
+        except Exception as e:
+            logger.error(f"Failed to persist active model to PostgreSQL: {e}")
+            success = False
+
+    return success
+
+
+async def sync_active_model_from_db() -> str:
+    """Sync active model from PostgreSQL to Redis on startup"""
+    # Try to get from PostgreSQL first (source of truth)
+    db_model = await get_active_model_from_db()
+
+    if db_model:
+        # Sync to Redis
+        try:
+            r = get_redis()
+            r.set(ACTIVE_MODEL_KEY, db_model)
+            logger.info(f"Synced active model from PostgreSQL to Redis: {db_model}")
+            return db_model
+        except Exception as e:
+            logger.warning(f"Failed to sync to Redis: {e}")
+            return db_model
+
+    # If no DB value, check Redis
+    try:
+        r = get_redis()
+        redis_model = r.get(ACTIVE_MODEL_KEY)
+        if redis_model:
+            # Persist Redis value to DB
+            if _db_service:
+                await _db_service.set_config(
+                    ACTIVE_MODEL_CONFIG_KEY,
+                    redis_model,
+                    "Currently active LLM model"
+                )
+                logger.info(f"Persisted existing Redis model to PostgreSQL: {redis_model}")
+            return redis_model
+    except Exception as e:
+        logger.warning(f"Redis read failed during sync: {e}")
+
+    # Use default and persist it
+    logger.info(f"No active model found, using default: {DEFAULT_MODEL}")
+    if _db_service:
+        await _db_service.set_config(
+            ACTIVE_MODEL_CONFIG_KEY,
+            DEFAULT_MODEL,
+            "Currently active LLM model"
+        )
+    return DEFAULT_MODEL
+
 
 def set_active_model(model: str) -> bool:
-    """Set the active model in Redis"""
+    """Set the active model in Redis (sync version for backward compatibility)"""
     try:
         r = get_redis()
         r.set(ACTIVE_MODEL_KEY, model)
@@ -162,7 +271,7 @@ async def get_active_model_endpoint():
 
 @router.post("/models/active")
 async def set_active_model_endpoint(request: SetActiveModelRequest):
-    """Set the active model for chat generation"""
+    """Set the active model for chat generation (persisted to PostgreSQL)"""
     # Verify model exists
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -170,19 +279,19 @@ async def set_active_model_endpoint(request: SetActiveModelRequest):
             response.raise_for_status()
             data = response.json()
             model_names = [m["name"] for m in data.get("models", [])]
-            
+
             if request.model not in model_names:
                 raise HTTPException(
-                    status_code=404, 
+                    status_code=404,
                     detail=f"Model '{request.model}' not found. Available: {model_names}"
                 )
     except httpx.HTTPError as e:
         raise HTTPException(status_code=503, detail=f"Ollama not available: {e}")
-    
-    # Set active model
-    if set_active_model(request.model):
-        logger.info(f"Active model changed to: {request.model}")
-        return {"status": "success", "model": request.model}
+
+    # Set active model with persistence to PostgreSQL
+    if await set_active_model_with_persistence(request.model):
+        logger.info(f"Active model changed and persisted: {request.model}")
+        return {"status": "success", "model": request.model, "persisted": True}
     else:
         raise HTTPException(status_code=500, detail="Failed to update active model")
 

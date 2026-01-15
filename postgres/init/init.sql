@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS documents (
     content TEXT,
     chunks_count INTEGER DEFAULT 0,
     status VARCHAR(50) DEFAULT 'pending',
+    progress INTEGER DEFAULT 0,
     error_message TEXT,
     -- Document metadata
     page_count INTEGER DEFAULT 0,

@@ -26,12 +26,32 @@ class VectorRetriever:
         self._ensure_collection()
     
     def _ensure_collection(self):
-        """Ensure the collection exists"""
+        """Ensure the collection exists with correct dimension"""
         try:
             collections = self.client.get_collections()
-            exists = any(c.name == self.COLLECTION_NAME for c in collections.collections)
-            
-            if not exists:
+            existing = next(
+                (c for c in collections.collections if c.name == self.COLLECTION_NAME),
+                None
+            )
+
+            if existing:
+                # Validate dimension matches
+                info = self.client.get_collection(self.COLLECTION_NAME)
+                existing_dim = info.config.params.vectors.size
+                if existing_dim != self.dimension:
+                    logger.warning(
+                        f"⚠️ Qdrant collection dimension mismatch! "
+                        f"Existing: {existing_dim}, Expected: {self.dimension}. "
+                        f"Data will be preserved. If you changed embedding models, "
+                        f"you may need to re-index documents."
+                    )
+                    # Store the actual dimension being used
+                    self.actual_dimension = existing_dim
+                else:
+                    self.actual_dimension = self.dimension
+                    logger.info(f"Using existing collection: {self.COLLECTION_NAME} (dim={existing_dim})")
+            else:
+                # Create new collection
                 self.client.create_collection(
                     collection_name=self.COLLECTION_NAME,
                     vectors_config=VectorParams(
@@ -39,9 +59,11 @@ class VectorRetriever:
                         distance=Distance.COSINE
                     )
                 )
-                logger.info(f"Created collection: {self.COLLECTION_NAME}")
+                self.actual_dimension = self.dimension
+                logger.info(f"Created collection: {self.COLLECTION_NAME} (dim={self.dimension})")
         except Exception as e:
             logger.error(f"Failed to ensure collection: {e}")
+            self.actual_dimension = self.dimension
     
     async def add_documents(
         self,

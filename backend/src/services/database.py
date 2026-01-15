@@ -359,8 +359,50 @@ class DatabaseService:
         count = int(result.split()[-1]) if result else 0
         return count
     
+    # ==================== CONFIG OPERATIONS ====================
+
+    async def get_config(self, key: str) -> Optional[Any]:
+        """Get a configuration value from system_config table"""
+        query = "SELECT value FROM system_config WHERE key = $1"
+
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, key)
+
+        if row:
+            return row["value"]
+        return None
+
+    async def set_config(self, key: str, value: Any, description: str = None) -> bool:
+        """Set a configuration value in system_config table (upsert)"""
+        query = """
+            INSERT INTO system_config (key, value, description, updated_at)
+            VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+            ON CONFLICT (key) DO UPDATE SET
+                value = EXCLUDED.value,
+                description = COALESCE(EXCLUDED.description, system_config.description),
+                updated_at = CURRENT_TIMESTAMP
+            RETURNING key
+        """
+
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(query, key, value, description)
+            return row is not None
+        except Exception as e:
+            logger.error(f"Failed to set config {key}: {e}")
+            return False
+
+    async def get_all_config(self) -> Dict[str, Any]:
+        """Get all configuration values"""
+        query = "SELECT key, value, description, updated_at FROM system_config"
+
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(query)
+
+        return {row["key"]: row["value"] for row in rows}
+
     # ==================== STATS ====================
-    
+
     async def get_stats(self) -> Dict[str, Any]:
         """Get overall statistics"""
         docs_query = """

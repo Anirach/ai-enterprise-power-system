@@ -22,7 +22,7 @@ import {
   BookOpen
 } from 'lucide-react'
 
-const API_URL = typeof window !== 'undefined' ? 'http://localhost:8000' : 'http://backend:8000'
+const API_URL = typeof window !== 'undefined' ? 'http://localhost:3602' : 'http://backend:8000'
 
 // Popular models from Ollama library (https://ollama.com/search?c=tools)
 const POPULAR_MODELS = [
@@ -315,11 +315,11 @@ export default function AdminPage() {
   }
 
   const quickLinks = [
-    { name: 'API Documentation', url: 'http://localhost:8000/docs', icon: BookOpen, color: 'text-blue-400', desc: 'FastAPI Swagger UI' },
+    { name: 'API Documentation', url: 'http://localhost:3602/docs', icon: BookOpen, color: 'text-blue-400', desc: 'FastAPI Swagger UI' },
     { name: 'MinIO Console', url: 'http://localhost:9001', icon: FileBox, color: 'text-red-400', desc: 'Object Storage Management' },
     { name: 'Qdrant Dashboard', url: 'http://localhost:6333/dashboard', icon: Database, color: 'text-purple-400', desc: 'Vector Database UI' },
     { name: 'n8n Automation', url: 'http://localhost:5678', icon: Workflow, color: 'text-orange-400', desc: 'Workflow Automation' },
-    { name: 'Ollama API', url: 'http://localhost:11434', icon: Bot, color: 'text-green-400', desc: 'Local LLM Server' },
+    { name: 'Ollama Model Library', url: 'https://ollama.com/library', icon: Bot, color: 'text-green-400', desc: 'Browse & Download Models' },
   ]
 
   return (
